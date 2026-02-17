@@ -109,6 +109,11 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обробник навігації по головному меню"""
+    
+    # ВАЖЛИВО: Якщо активний режим альбому - ігноруємо головне меню
+    if context.user_data.get('album_keyboard_active'):
+        return  # Просто виходимо, нічого не робимо
+    
     text = update.message.text
     user_id = update.effective_user.id
     
@@ -282,6 +287,7 @@ async def open_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ВАЖЛИВО: Зберігаємо поточний альбом в контексті
     context.user_data['current_album'] = album_id
+    context.user_data['album_keyboard_active'] = True
     
     # Отримуємо дані альбому
     album = db.get_album(album_id)
@@ -290,31 +296,145 @@ async def open_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Альбом не знайдено.")
         return
     
-    # Кнопки для альбому (згідно ТЗ)
-    keyboard = [
-        [InlineKeyboardButton("📤 Надіслати весь альбом", callback_data=f"send_all_{album_id}")],
-        [InlineKeyboardButton("⏳ Надіслати останні", callback_data=f"send_recent_{album_id}")],
-        [InlineKeyboardButton("📅 Надіслати за датою", callback_data=f"send_by_date_{album_id}")],
-        [InlineKeyboardButton("🗑 Видалити файли", callback_data=f"delete_files_{album_id}")],
-        [InlineKeyboardButton("ℹ️ Інформація", callback_data=f"album_info_{album_id}")],
-        [InlineKeyboardButton("⋯ Додаткові дії", callback_data=f"album_more_{album_id}")],
-        [InlineKeyboardButton("◀️ Назад", callback_data="back_to_albums")]
-    ]
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
     # Інформація про альбом
     text = (
         f"📁 **{album['name']}**\n"
         f"└ Файлів: {album['files_count']}\n\n"
-        f"Надсилайте файли в цей чат, вони автоматично збережуться в альбом."
     )
     
+    # РЕПЛАЙ КЛАВІАТУРА (всі кнопки)
+    album_keyboard = ReplyKeyboardMarkup([
+        [KeyboardButton("📤 Надіслати весь альбом")],
+        [KeyboardButton("⏳ Надіслати останні")],
+        [KeyboardButton("📅 Надіслати за датою")],
+        [KeyboardButton("⋯ Додаткові дії")],
+        [KeyboardButton("◀️ Вийти з альбому")]
+    ], resize_keyboard=True)
+    
+    # Спочатку редагуємо повідомлення (без зміни клавіатури)
     await query.edit_message_text(
         text,
-        reply_markup=reply_markup,
         parse_mode='Markdown'
     )
+    
+    # Потім надсилаємо нове повідомлення з реплай клавіатурою
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text="Надсилайте файли в цей чат, вони автоматично збережуться в альбом 👇",  # Непомітна крапка
+        reply_markup=album_keyboard
+    )
+
+# ========== ОБРОБНИК КНОПОК АЛЬБОМУ ==========
+
+async def handle_album_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обробник кнопок реплай клавіатури альбому"""
+    # Перевіряємо чи активний режим альбому
+    if not context.user_data.get('album_keyboard_active'):
+        return False
+    
+    text = update.message.text
+    album_id = context.user_data.get('current_album')
+    
+    if not album_id:
+        return False
+    
+    # Отримуємо дані альбому
+    album = db.get_album(album_id)
+    if not album:
+        return False
+    
+    if text == "📤 Надіслати весь альбом":
+        files = db.get_album_files(album_id)
+        
+        if not files:
+            await update.message.reply_text("📭 В альбомі немає файлів.")
+            return True
+        
+        await update.message.reply_text(f"📤 Надсилаю всі {len(files)} файлів з альбому '{album['name']}'...")
+        
+        for file in files:
+            await send_file_by_type(update, context, file)
+        
+        await update.message.reply_text("✅ Готово!")
+        return True
+    
+    elif text == "⏳ Надіслати останні":
+        context.user_data['send_recent_album'] = album_id
+        context.user_data['awaiting_recent_count'] = True
+        
+        await update.message.reply_text(
+            "⏳ Скільки останніх файлів надіслати?\n"
+            "Введіть число (наприклад: 5, 10, 20):"
+        )
+        return True
+    
+    elif text == "📅 Надіслати за датою":
+        context.user_data['send_date_album'] = album_id
+        context.user_data['awaiting_date'] = True
+        
+        await update.message.reply_text(
+            "📅 Введіть дату у форматі РРРР-ММ-ДД\n"
+            "Наприклад: 2024-01-31"
+        )
+        return True
+    
+    elif text == "⋯ Додаткові дії":
+        # ВАЖЛИВО: Зберігаємо стан альбому
+        context.user_data['album_keyboard_active'] = True
+        context.user_data['current_album'] = album_id
+        
+        # Показуємо інлайн меню з додатковими діями
+        keyboard = [
+            [InlineKeyboardButton("ℹ️ Інформація", callback_data=f"album_info_{album_id}")],
+            [InlineKeyboardButton("🗑 Видалити файли", callback_data=f"delete_files_{album_id}")],
+            [InlineKeyboardButton("🗂 Архівувати", callback_data=f"archive_album_{album_id}")],
+            [InlineKeyboardButton("🗑 Видалити альбом", callback_data=f"delete_album_{album_id}")],
+            [InlineKeyboardButton("👥 Зробити спільним", callback_data=f"make_shared_{album_id}")]
+        ]
+        
+        await update.message.reply_text(
+            "⋯ **Додаткові дії**\n\nОберіть потрібну дію:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+        return True
+    
+    elif text == "◀️ Вийти з альбому":
+        # Виходимо з альбому
+        context.user_data['album_keyboard_active'] = False
+        context.user_data.pop('current_album', None)
+        
+        await update.message.reply_text(
+            "Ви вийшли з альбому",
+            reply_markup=MAIN_MENU
+        )
+        return True
+    
+    return False
+
+# ========== ФУНКЦІЯ ДЛЯ НАДСИЛАННЯ ФАЙЛІВ ==========
+
+async def send_file_by_type(update: Update, context: ContextTypes.DEFAULT_TYPE, file_data):
+    """Надсилання файлу за його типом"""
+    file_id = file_data['telegram_file_id']
+    file_type = file_data['file_type']
+    
+    try:
+        if file_type == 'photo':
+            await update.message.reply_photo(photo=file_id)
+        elif file_type == 'video':
+            await update.message.reply_video(video=file_id)
+        elif file_type == 'document':
+            await update.message.reply_document(document=file_id)
+        elif file_type == 'audio':
+            await update.message.reply_audio(audio=file_id)
+        elif file_type == 'voice':
+            await update.message.reply_voice(voice=file_id)
+        elif file_type == 'circle':
+            await update.message.reply_video_note(video_note=file_id)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Помилка надсилання: {e}")
+    
 # ========== ЗБЕРЕЖЕННЯ ФАЙЛІВ ==========
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -484,61 +604,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Обробляємо різні callback_data
     if data == "create_album":
         await create_album_start(update, context)
-    # Додати в callback_handler після інших умов:
-
-    elif data.startswith("send_recent_"):
-        await send_recent_start(update, context)
-    
-    elif data.startswith("send_all_"):
-        await send_all_files(update, context)
-    
-    elif data.startswith("send_by_date_"):
-        await send_by_date_start(update, context)
-    
-    elif data.startswith("delete_files_"):
-        await delete_files_start(update, context)
-    
-    elif data.startswith("delete_file_"):
-        await delete_file_callback(update, context)
-    
-    elif data.startswith("confirm_delete_"):
-        await confirm_delete_file(update, context)
-    
-    elif data.startswith("album_info_"):
-        await album_info(update, context)
-    
-    elif data.startswith("album_more_"):
-        # Додаткові дії з альбомом
-        album_id = int(data.split('_')[2])
-        keyboard = [
-            [InlineKeyboardButton("🗂 Архівувати", callback_data=f"archive_album_{album_id}")],
-            [InlineKeyboardButton("🗑 Видалити альбом", callback_data=f"delete_album_{album_id}")],
-            [InlineKeyboardButton("👥 Зробити спільним", callback_data=f"make_shared_{album_id}")],
-            [InlineKeyboardButton("◀️ Назад", callback_data=f"open_album_{album_id}")]
-        ]
-        await query.edit_message_text(
-            "⋯ **Додаткові дії**",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode='Markdown'
-        )
-    
-    elif data.startswith("archive_album_"):
-        await archive_album(update, context)
-    
-    elif data.startswith("confirm_archive_"):
-        await confirm_archive(update, context)
-    
-    elif data.startswith("delete_album_"):
-        await delete_album_start(update, context)
-    
-    elif data.startswith("del_page_"):
-        # Навігація по сторінках видалення
-        parts = data.split('_')
-        album_id = int(parts[2])
-        page = int(parts[3])
-        files = db.get_album_files(album_id)
-        from album_manage import show_files_for_deletion
-        await show_files_for_deletion(query, album_id, files, page)
     
     elif data == "back_to_albums":
         await back_to_albums(update, context)
@@ -548,6 +613,65 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif data.startswith("open_album_"):
         await open_album(update, context)
+    
+    # ===== ДОДАТКОВІ ДІЇ =====
+    elif data.startswith("album_info_"):
+        await album_info(update, context)
+        # Після інформації повертаємось в альбом
+        album_id = int(data.split('_')[2])
+        await return_to_album_callback(update, context, album_id)
+    
+    elif data.startswith("delete_files_"):
+        await delete_files_start(update, context)
+    
+    elif data.startswith("delete_file_"):
+        await delete_file_callback(update, context)
+    
+    elif data.startswith("confirm_delete_"):
+        await confirm_delete_file(update, context)
+        # Після видалення повертаємось в альбом
+        file_id = int(data.split('_')[2])
+        file = db.cursor.execute("SELECT album_id FROM files WHERE file_id = ?", (file_id,)).fetchone()
+        if file:
+            await return_to_album_callback(update, context, file['album_id'])
+    
+    elif data.startswith("archive_album_"):
+        await archive_album(update, context)
+    
+    elif data.startswith("confirm_archive_"):
+        await confirm_archive(update, context)
+        # Після архівації повертаємось до списку альбомів
+        await back_to_albums(update, context)
+    
+    elif data.startswith("delete_album_"):
+        await delete_album_start(update, context)
+    
+    elif data.startswith("del_page_"):
+        parts = data.split('_')
+        album_id = int(parts[2])
+        page = int(parts[3])
+        files = db.get_album_files(album_id)
+        from album_manage import show_files_for_deletion
+        await show_files_for_deletion(query, album_id, files, page)
+    
+    # ===== АДМІНКА =====
+    elif data == "admin_stats":
+        await admin_stats(update, context)
+    
+    elif data == "admin_users":
+        await admin_users(update, context)
+    
+    elif data == "admin_premium":
+        await admin_premium(update, context)
+    
+    elif data == "admin_broadcast":
+        await admin_broadcast(update, context)
+    
+    elif data == "admin_settings":
+        await admin_settings(update, context)
+    
+    elif data == "admin_logs":
+        await admin_logs(update, context)
     
     elif data == "show_archived":
         await query.answer()
@@ -567,28 +691,31 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]])
         )
     
-    # Адмін-панель
-    elif data == "admin_stats":
-        await admin_stats(update, context)
-    
-    elif data == "admin_users":
-        await admin_users(update, context)
-    
-    elif data == "admin_premium":
-        await admin_premium(update, context)
-    
-    elif data == "admin_broadcast":
-        await admin_broadcast(update, context)
-    
-    elif data == "admin_settings":
-        await admin_settings(update, context)
-    
-    elif data == "admin_logs":
-        await admin_logs(update, context)
-    
     else:
-        # Якщо невідома команда
         await query.answer("Функція в розробці")
+
+# ===== ДОПОМІЖНА ФУНКЦІЯ ДЛЯ ПОВЕРНЕННЯ В АЛЬБОМ =====
+
+async def return_to_album_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, album_id):
+    """Повернення в режим альбому після callback"""
+    context.user_data['current_album'] = album_id
+    context.user_data['album_keyboard_active'] = True
+    
+    album = db.get_album(album_id)
+    if album:
+        album_keyboard = ReplyKeyboardMarkup([
+            [KeyboardButton("📤 Надіслати весь альбом")],
+            [KeyboardButton("⏳ Надіслати останні")],
+            [KeyboardButton("📅 Надіслати за датою")],
+            [KeyboardButton("⋯ Додаткові дії")],
+            [KeyboardButton("◀️ Вийти з альбому")]
+        ], resize_keyboard=True)
+        
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=".",  # Непомітна крапка
+            reply_markup=album_keyboard
+        )
 
 # ========== АДМІН ФУНКЦІЇ (заглушки) ==========
 
@@ -692,7 +819,12 @@ def main():
     application.add_handler(CommandHandler("admin", admin_command))
     
     # ВАЖЛИВО: Спочатку обробники конкретних станів (вищий пріоритет)
-    # Вони мають бути ДО загального обробника меню
+    
+    # Обробник для кнопок альбому - НАЙВИЩИЙ ПРІОРИТЕТ
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        handle_album_buttons
+    ), group=1)
     
     # Обробник для назви альбому
     application.add_handler(MessageHandler(
@@ -718,7 +850,7 @@ def main():
         handle_delete_confirmation
     ), group=1)
     
-    # Основний обробник меню (нижчий пріоритет)
+    # Основний обробник меню (найнижчий пріоритет)
     application.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND, 
         handle_menu
