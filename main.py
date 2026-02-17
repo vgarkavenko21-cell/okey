@@ -134,9 +134,9 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_settings(update, context)
     
     else:
-        # Якщо текст не з меню - ігноруємо або показуємо підказку
+        # Якщо текст не з меню - просто показуємо меню знову
         await update.message.reply_text(
-            "Будь ласка, використовуйте кнопки меню 👇",
+            "Оберіть розділ у меню:",
             reply_markup=MAIN_MENU
         )
 
@@ -221,8 +221,9 @@ async def create_album_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def handle_album_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обробник введення назви альбому"""
+    # Перевіряємо чи ми в стані очікування назви
     if not context.user_data.get('awaiting_album_name'):
-        return False
+        return  # Просто виходимо, нічого не відповідаємо
     
     album_name = update.message.text
     user_id = update.effective_user.id
@@ -233,22 +234,25 @@ async def handle_album_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "❌ Назва занадто довга (максимум 50 символів).\n"
             "Спробуйте ще раз:"
         )
-        return True
+        return
     
     if len(album_name) < 2:
         await update.message.reply_text(
             "❌ Назва занадто коротка (мінімум 2 символи).\n"
             "Спробуйте ще раз:"
         )
-        return True
+        return
     
     # Створюємо альбом в БД
     album_id = db.create_album(user_id, album_name)
     
-    # Очищаємо стан
+    # ВАЖЛИВО: Встановлюємо поточний альбом
+    context.user_data['current_album'] = album_id
+    
+    # Очищаємо стан очікування
     context.user_data['awaiting_album_name'] = False
     
-    # Показуємо успішне створення
+    # Показуємо успішне створення з ІНЛАЙН КНОПКАМИ
     keyboard = [
         [InlineKeyboardButton("📂 Відкрити альбом", callback_data=f"open_album_{album_id}")],
         [InlineKeyboardButton("📷 До списку альбомів", callback_data="back_to_albums")]
@@ -263,7 +267,8 @@ async def handle_album_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup
     )
     
-    return True
+    # ВАЖЛИВО: Встановлюємо поточний альбом
+    context.user_data['current_album'] = album_id
 
 # ========== ВІДКРИТТЯ АЛЬБОМУ ==========
 
@@ -275,7 +280,7 @@ async def open_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Отримуємо album_id з callback_data
     album_id = int(query.data.split('_')[2])
     
-    # Зберігаємо поточний альбом в контексті
+    # ВАЖЛИВО: Зберігаємо поточний альбом в контексті
     context.user_data['current_album'] = album_id
     
     # Отримуємо дані альбому
@@ -310,7 +315,6 @@ async def open_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup,
         parse_mode='Markdown'
     )
-
 # ========== ЗБЕРЕЖЕННЯ ФАЙЛІВ ==========
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -328,14 +332,13 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not album:
         return
     
+    # Визначаємо тип файлу і отримуємо file_id
     file_id = None
     file_type = None
     file_name = None
     file_size = None
     
-    # Визначаємо тип файлу і отримуємо file_id
     if update.message.photo:
-        # Беремо найбільше фото
         photo = update.message.photo[-1]
         file_id = photo.file_id
         file_type = 'photo'
@@ -381,7 +384,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"{emoji} Файл збережено в альбом '{album['name']}'"
     )
-
 # ========== СПІЛЬНІ АЛЬБОМИ ==========
 
 async def show_shared_albums(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -689,42 +691,44 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("admin", admin_command))
     
-    # Додаємо обробник текстових повідомлень (головне меню)
-    application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND, 
-        handle_menu
-    ))
+    # ВАЖЛИВО: Спочатку обробники конкретних станів (вищий пріоритет)
+    # Вони мають бути ДО загального обробника меню
     
-    # Додаємо обробник для назви альбому
+    # Обробник для назви альбому
     application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND, 
+        filters.TEXT & ~filters.COMMAND,
         handle_album_name
-    ))
+    ), group=1)
     
-    # Додаємо обробник для файлів - ВИПРАВЛЕНО!
-    application.add_handler(MessageHandler(
-        filters.PHOTO | filters.VIDEO | filters.Document.ALL | 
-        filters.AUDIO | filters.VOICE | filters.VIDEO_NOTE,
-        handle_file
-    ))
-    # Додати ці обробники в main() після інших MessageHandler:
-
     # Обробник для кількості останніх файлів
     application.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND,
         handle_recent_count
-    ))
+    ), group=1)
     
     # Обробник для дати
     application.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND,
         handle_date_input
-    ))
+    ), group=1)
     
     # Обробник для підтвердження видалення альбому
     application.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND,
         handle_delete_confirmation
+    ), group=1)
+    
+    # Основний обробник меню (нижчий пріоритет)
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND, 
+        handle_menu
+    ), group=2)
+    
+    # Обробник для файлів
+    application.add_handler(MessageHandler(
+        filters.PHOTO | filters.VIDEO | filters.Document.ALL | 
+        filters.AUDIO | filters.VOICE | filters.VIDEO_NOTE,
+        handle_file
     ))
     
     # Додаємо обробник callback запитів
