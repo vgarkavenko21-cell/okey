@@ -37,8 +37,7 @@ db = Database()
 
 # Головне меню (згідно ТЗ)
 MAIN_MENU = ReplyKeyboardMarkup([
-    [KeyboardButton("📷 Мої альбоми")],
-    [KeyboardButton("👥 Спільні альбоми")],
+    [KeyboardButton("📷 Мої альбоми"), KeyboardButton("👥 Спільні альбоми")],
     [KeyboardButton("📝 Мої нотатки"), KeyboardButton("🤝 Спільні нотатки")],
     [KeyboardButton("⚙️ Налаштування")]
 ], resize_keyboard=True)
@@ -338,7 +337,10 @@ async def open_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_album_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обробник кнопок реплай клавіатури альбому"""
-    # Перевіряємо чи активний режим альбому
+    
+    # Додайте цей код для логування
+    print(f"📌 handle_album_buttons: text='{update.message.text}', active={context.user_data.get('album_keyboard_active')}")
+    
     if not context.user_data.get('album_keyboard_active'):
         return False
     
@@ -348,10 +350,10 @@ async def handle_album_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
     if not album_id:
         return False
     
-    # Отримуємо дані альбому
     album = db.get_album(album_id)
     if not album:
         return False
+    
     
     # ===== ОСНОВНІ КНОПКИ АЛЬБОМУ =====
     if text == "📤 Надіслати весь альбом":
@@ -395,7 +397,7 @@ async def handle_album_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
         context.user_data['current_album'] = album_id
         context.user_data['in_additional_menu'] = True  # Позначаємо що ми в додатковому меню
         
-        # НОВА РЕПЛАЙ КЛАВІАТУРА для додаткових дій
+        # РЕПЛАЙ КЛАВІАТУРА для додаткових дій
         additional_keyboard = ReplyKeyboardMarkup([
             [KeyboardButton("ℹ️ Інформація")],
             [KeyboardButton("🗑 Видалити файли")],
@@ -425,32 +427,39 @@ async def handle_album_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
         return True
     
     # ===== КНОПКИ ДОДАТКОВОГО МЕНЮ =====
-    elif context.user_data.get('in_additional_menu'):
+    if context.user_data.get('in_additional_menu'):
         
         if text == "ℹ️ Інформація":
-            # Показуємо інформацію про альбом
             await show_album_info(update, context, album_id)
+            # Залишаємось в додатковому меню
+            context.user_data['in_additional_menu'] = True
             return True
         
         elif text == "🗑 Видалити файли":
-            # Переходимо в режим видалення файлів
-            await start_delete_files(update, context, album_id)
+            await update.message.reply_text("🗑 Функція видалення файлів в розробці")
+            # Залишаємось в додатковому меню
+            context.user_data['in_additional_menu'] = True
             return True
         
         elif text == "🗂 Архівувати альбом":
             await archive_album_confirm(update, context, album_id)
+            # Залишаємось в додатковому меню
+            context.user_data['in_additional_menu'] = True
             return True
         
         elif text == "🗑 Видалити альбом":
             await delete_album_confirm(update, context, album_id)
+            # Залишаємось в додатковому меню
+            context.user_data['in_additional_menu'] = True
             return True
         
         elif text == "👥 Зробити спільним":
-            await make_shared_start(update, context, album_id)
+            await update.message.reply_text("👥 Функція спільних альбомів в розробці")
+            # Залишаємось в додатковому меню
+            context.user_data['in_additional_menu'] = True
             return True
         
         elif text == "◀️ Назад до альбому":
-            # Повертаємось до основної клавіатури альбому
             context.user_data['in_additional_menu'] = False
             await return_to_album_keyboard(update, context, album_id)
             return True
@@ -459,6 +468,8 @@ async def handle_album_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 # ========== ДОПОМІЖНІ ФУНКЦІЇ ДЛЯ ДОДАТКОВОГО МЕНЮ ==========
+
+# ========== ФУНКЦІЇ ДЛЯ ДОДАТКОВОГО МЕНЮ ==========
 
 async def return_to_album_keyboard(update: Update, context: ContextTypes.DEFAULT_TYPE, album_id):
     """Повернення до основної клавіатури альбому"""
@@ -504,16 +515,6 @@ async def show_album_info(update: Update, context: ContextTypes.DEFAULT_TYPE, al
     
     await update.message.reply_text(text, parse_mode='Markdown')
 
-async def start_delete_files(update: Update, context: ContextTypes.DEFAULT_TYPE, album_id):
-    """Початок видалення файлів"""
-    files = db.get_album_files(album_id)
-    if not files:
-        await update.message.reply_text("📭 В альбомі немає файлів.")
-        return
-    
-    # Тут буде логіка видалення файлів
-    await update.message.reply_text("🗑 Функція видалення файлів в розробці")
-
 async def archive_album_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE, album_id):
     """Підтвердження архівації альбому"""
     album = db.get_album(album_id)
@@ -533,17 +534,104 @@ async def delete_album_confirm(update: Update, context: ContextTypes.DEFAULT_TYP
     album = db.get_album(album_id)
     context.user_data['deleting_album'] = album_id
     context.user_data['awaiting_album_name_confirm'] = True
+    context.user_data['album_name_to_delete'] = album['name']  # Зберігаємо назву для перевірки
     
     await update.message.reply_text(
         f"🗑 **Видалення альбому**\n\n"
-        f"Для підтвердження введіть точну назву альбому:\n"
-        f"`{album['name']}`",
+        f"Для підтвердження введіть назву альбому:",
         parse_mode='Markdown'
     )
+
+async def handle_delete_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обробник підтвердження назви для видалення альбому"""
+    # Логуємо для відлагодження
+    print(f"🔍 handle_delete_confirmation викликано")
+    print(f"📊 user_data: {context.user_data}")
+    
+    if not context.user_data.get('awaiting_album_name_confirm'):
+        print("❌ awaiting_album_name_confirm = False")
+        return False
+    
+    user_input = update.message.text.strip()
+    correct_name = context.user_data.get('album_name_to_delete')
+    album_id = context.user_data.get('deleting_album')
+    user_id = update.effective_user.id
+    
+    print(f"📝 user_input: '{user_input}'")
+    print(f"📝 correct_name: '{correct_name}'")
+    print(f"📝 album_id: {album_id}")
+    
+    if not correct_name or not album_id:
+        print("❌ correct_name або album_id відсутні")
+        return False
+    
+    if user_input == correct_name:
+        print("✅ Назва співпадає")
+        
+        # Отримуємо альбом для перевірки
+        album = db.get_album(album_id)
+        
+        if not album:
+            print("❌ Альбом не знайдено в БД")
+            await update.message.reply_text("❌ Альбом не знайдено.")
+            
+            # Очищаємо дані
+            context.user_data['awaiting_album_name_confirm'] = False
+            context.user_data.pop('deleting_album', None)
+            context.user_data.pop('album_name_to_delete', None)
+            return True
+        
+        # Видаляємо альбом з БД
+        print(f"🗑 Видаляємо альбом ID: {album_id}")
+        db.delete_album(album_id)
+        print("✅ Альбом видалено з БД")
+        
+        # Логування для адміна
+        print(f"🗑 Альбом '{correct_name}' (ID: {album_id}) видалено користувачем {user_id}")
+        
+        # Очищаємо всі дані
+        context.user_data['awaiting_album_name_confirm'] = False
+        context.user_data.pop('deleting_album', None)
+        context.user_data.pop('album_name_to_delete', None)
+        context.user_data.pop('in_additional_menu', None)
+        context.user_data.pop('current_album', None)
+        context.user_data['album_keyboard_active'] = False
+        
+        print("📊 user_data після очищення:", context.user_data)
+        
+        # Показуємо підтвердження і повертаємось в головне меню
+        await update.message.reply_text(
+            f"✅ Альбом '{correct_name}' успішно видалено!",
+            reply_markup=MAIN_MENU
+        )
+        
+        # Показуємо список альбомів, що залишились
+        await show_my_albums(update, context)
+        
+        return True
+    else:
+        # Назва не співпадає
+        print(f"❌ Назва '{user_input}' не співпадає з '{correct_name}'")
+        
+        await update.message.reply_text(
+            f"❌ Назва не співпадає. Видалення скасовано."
+        )
+        
+        # Очищаємо дані
+        context.user_data['awaiting_album_name_confirm'] = False
+        context.user_data.pop('deleting_album', None)
+        context.user_data.pop('album_name_to_delete', None)
+        
+        # Повертаємось в додаткове меню
+        if album_id:
+            context.user_data['in_additional_menu'] = True
+            await return_to_album_keyboard(update, context, album_id)
+        return True
 
 async def make_shared_start(update: Update, context: ContextTypes.DEFAULT_TYPE, album_id):
     """Початок створення спільного альбому"""
     await update.message.reply_text("👥 Функція спільних альбомів в розробці")
+
 
 # ========== ФУНКЦІЯ ДЛЯ НАДСИЛАННЯ ФАЙЛІВ ==========
 
@@ -988,67 +1076,65 @@ async def admin_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
 
+## ========== ГОЛОВНА ФУНКЦІЯ ==========
+
 # ========== ГОЛОВНА ФУНКЦІЯ ==========
 
 def main():
-    """Головна функція запуску бота"""
-    # Створюємо додаток
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # Додаємо обробники команд
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("admin", admin_command))
     
-    # ВАЖЛИВО: Спочатку обробники конкретних станів (вищий пріоритет)
+    # ВАЖЛИВО: Правильний порядок пріоритетів
     
-    # Обробник для кнопок альбому - НАЙВИЩИЙ ПРІОРИТЕТ
+    # 1. НАЙВИЩИЙ ПРІОРИТЕТ - Спеціальні стани
     application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND,
-        handle_album_buttons
-    ), group=1)
-    
-    # Обробник для назви альбому
-    application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND,
+        filters.TEXT & ~filters.COMMAND, 
         handle_album_name
     ), group=1)
     
-    # Обробник для кількості останніх файлів
     application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND,
-        handle_recent_count
-    ), group=1)
-    
-    # Обробник для дати
-    application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND,
-        handle_date_input
-    ), group=1)
-    
-    # Обробник для підтвердження видалення альбому
-    application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND,
+        filters.TEXT & ~filters.COMMAND, 
         handle_delete_confirmation
     ), group=1)
     
-    # Основний обробник меню (найнижчий пріоритет)
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND, 
+        handle_recent_count
+    ), group=1)
+    
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND, 
+        handle_date_input
+    ), group=1)
+    
+    # 2. СЕРЕДНІЙ ПРІОРИТЕТ - Кнопки альбому
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND, 
+        handle_album_buttons
+    ), group=2)
+    
+    # 3. НАЙНИЖЧИЙ ПРІОРИТЕТ - Головне меню
     application.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND, 
         handle_menu
-    ), group=2)
+    ), group=3)
     
-    # Обробник для файлів
+    # Обробник файлів
     application.add_handler(MessageHandler(
-        filters.PHOTO | filters.VIDEO | filters.Document.ALL | 
-        filters.AUDIO | filters.VOICE | filters.VIDEO_NOTE,
+        filters.PHOTO | filters.VIDEO | filters.Document.ALL | filters.AUDIO | filters.VOICE | filters.VIDEO_NOTE,
         handle_file
     ))
     
-    # Додаємо обробник callback запитів
     application.add_handler(CallbackQueryHandler(callback_handler))
     
-    # Запускаємо бота
     print("🚀 Бот запускається...")
+    print("📋 Порядок обробників:")
+    print("  group=1: handle_album_name, handle_delete_confirmation, handle_recent_count, handle_date_input")
+    print("  group=2: handle_album_buttons")
+    print("  group=3: handle_menu")
+    
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
