@@ -8,24 +8,13 @@ db = Database()
 # ========== ВИДАЛЕННЯ ФАЙЛІВ ==========
 
 async def delete_files_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Початок процесу видалення файлів"""
+    """Початок видалення файлів - перенаправляє в нове меню"""
     query = update.callback_query
     await query.answer()
     
-    album_id = int(query.data.split('_')[2])
-    files = db.get_album_files(album_id)
-    
-    if not files:
-        await query.edit_message_text(
-            "📭 В альбомі немає файлів для видалення.",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("◀️ Назад", callback_data=f"open_album_{album_id}")
-            ]])
-        )
-        return
-    
-    # Показуємо перші 10 файлів для видалення
-    await show_files_for_deletion(query, album_id, files, page=0)
+    # Викликаємо нове меню з file_delete.py
+    from file_delete import delete_files_menu
+    await delete_files_menu(update, context)
 
 async def show_files_for_deletion(query, album_id, files, page=0):
     """Показати файли для видалення посторінково"""
