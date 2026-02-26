@@ -380,18 +380,19 @@ async def start_delete_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, 
        
         
 # ========== ОБРОБНИК КНОПОК АЛЬБОМУ ==========
-
 async def handle_album_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обробник кнопок реплай клавіатури альбому"""
     
-    # ВАЖЛИВО: Якщо ми в режимі очікування числа або дати - ігноруємо
+    # ВАЖЛИВО: Якщо ми в режимі очікування - пропускаємо обробку кнопок альбому
     if (context.user_data.get('awaiting_recent_count') or 
         context.user_data.get('awaiting_date') or
         context.user_data.get('delete_action')):
+        print(f"⏭ Пропускаємо handle_album_buttons, бо в режимі очікування")
         return False
     
     print(f"📌 handle_album_buttons: text='{update.message.text}', active={context.user_data.get('album_keyboard_active')}")
     
+    # Якщо не активний режим альбому - виходимо
     if not context.user_data.get('album_keyboard_active'):
         return False
     
@@ -1141,7 +1142,17 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("admin", admin_command))
     
-    # 1. НАЙВИЩИЙ ПРІОРИТЕТ - Спеціальні стани
+    # 1. НАЙВИЩИЙ ПРІОРИТЕТ - Спеціальні стани (числа, дати)
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND, 
+        handle_recent_count   # ЦЕ МАЄ БУТИ ПЕРШИМ!
+    ), group=1)
+    
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND, 
+        handle_date_input
+    ), group=1)
+    
     application.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND, 
         handle_album_name
@@ -1150,34 +1161,6 @@ def main():
     application.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND, 
         handle_delete_confirmation
-    ), group=1)
-    
-    # Обробники для останніх файлів та дати
-    application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND, 
-        handle_recent_count
-    ), group=1)
-    
-    application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND, 
-        handle_date_input
-    ), group=1)
-    
-    # Обробники для видалення файлів
-    from file_delete import handle_delete_number_input, handle_delete_range_input, handle_delete_text
-    application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND, 
-        handle_delete_number_input
-    ), group=1)
-    
-    application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND, 
-        handle_delete_range_input
-    ), group=1)
-    
-    application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND, 
-        handle_delete_text
     ), group=1)
     
     # 2. СЕРЕДНІЙ ПРІОРИТЕТ - Кнопки альбому
@@ -1191,6 +1174,8 @@ def main():
         filters.TEXT & ~filters.COMMAND, 
         handle_menu
     ), group=3)
+    
+    # ... решта коду
     
     # Обробник файлів
     application.add_handler(MessageHandler(

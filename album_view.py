@@ -81,28 +81,33 @@ async def send_recent_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_recent_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обробник введення кількості останніх файлів"""
     # Лог для діагностики
-    print(f"📌 handle_recent_count викликано з текстом: {update.message.text}")
-    print(f"📌 awaiting_recent_count: {context.user_data.get('awaiting_recent_count')}")
+    print(f"🔴🔴🔴 handle_recent_count ВИКЛИКАНО з текстом: {update.message.text}")
+    print(f"🔴 awaiting_recent_count: {context.user_data.get('awaiting_recent_count')}")
+    print(f"🔴 send_recent_album: {context.user_data.get('send_recent_album')}")
     
     if not context.user_data.get('awaiting_recent_count'):
+        print("🔴 awaiting_recent_count = False, виходимо")
         return False
     
     try:
         count = int(update.message.text)
-        print(f"📌 count = {count}")
+        print(f"🔴 count = {count}")
         
         if count <= 0 or count > 50:
             await update.message.reply_text("❌ Введіть число від 1 до 50:")
             return True
         
         album_id = context.user_data.get('send_recent_album')
-        print(f"📌 album_id = {album_id}")
+        print(f"🔴 album_id = {album_id}")
         
         if not album_id:
+            print("🔴 album_id відсутній")
             return False
         
         files = db.get_album_files(album_id, limit=count)
         album = db.get_album(album_id)
+        
+        print(f"🔴 знайдено файлів: {len(files)}")
         
         if not files:
             await update.message.reply_text("📭 В альбомі немає файлів.")
@@ -115,6 +120,7 @@ async def handle_recent_count(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Очищаємо стан
         context.user_data['awaiting_recent_count'] = False
         context.user_data.pop('send_recent_album', None)
+        print("🔴 стан очищено")
         
         # Показуємо кнопку повернення
         album_keyboard = ReplyKeyboardMarkup([
@@ -132,6 +138,7 @@ async def handle_recent_count(update: Update, context: ContextTypes.DEFAULT_TYPE
         return True
         
     except ValueError:
+        print("🔴 помилка ValueError - введено не число")
         await update.message.reply_text("❌ Будь ласка, введіть число:")
         return True
 # ========== НАДІСЛАТИ ЗА ДАТОЮ ==========
@@ -156,51 +163,25 @@ async def send_by_date_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def handle_date_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обробник введення дати"""
-    # Лог для діагностики
-    print(f"📌 handle_date_input викликано з текстом: {update.message.text}")
-    print(f"📌 awaiting_date: {context.user_data.get('awaiting_date')}")
-    
     if not context.user_data.get('awaiting_date'):
         return False
     
     date_str = update.message.text
     album_id = context.user_data.get('send_date_album')
-    print(f"📌 album_id = {album_id}")
-    print(f"📌 date_str = {date_str}")
-    
     
     if not album_id:
         return False
     
     try:
-        # Перевіряємо формат дати (РРРР-ММ-ДД)
         from datetime import datetime
-        # Спробуємо розпарсити дату
-        if '-' in date_str:
-            parts = date_str.split('-')
-            if len(parts) == 3:
-                year, month, day = parts
-                # Перевіряємо чи це числа
-                int(year); int(month); int(day)
-                # Форматуємо правильно якщо треба
-                if len(year) == 4 and 1 <= int(month) <= 12 and 1 <= int(day) <= 31:
-                    formatted_date = f"{year}-{month.zfill(2)}-{day.zfill(2)}"
-                    datetime.strptime(formatted_date, '%Y-%m-%d')
-                    date_str = formatted_date
-                else:
-                    raise ValueError
-            else:
-                raise ValueError
-        else:
-            raise ValueError
+        # Перевіряємо формат дати
+        datetime.strptime(date_str, '%Y-%m-%d')
         
         files = db.get_files_by_date(album_id, date_str)
         album = db.get_album(album_id)
         
         if not files:
-            await update.message.reply_text(
-                f"📭 Немає файлів за {date_str}"
-            )
+            await update.message.reply_text(f"📭 Немає файлів за {date_str}")
         else:
             await update.message.reply_text(f"📤 Надсилаю {len(files)} файлів за {date_str} з альбому '{album['name']}'...")
             
@@ -226,12 +207,13 @@ async def handle_date_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return True
         
-    except (ValueError, IndexError):
+    except ValueError:
         await update.message.reply_text(
             "❌ Невірний формат. Введіть дату як РРРР-ММ-ДД\n"
             "Наприклад: 2024-01-31"
         )
         return True
+
 # ========== ІНФОРМАЦІЯ ПРО АЛЬБОМ ==========
 
 async def album_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
