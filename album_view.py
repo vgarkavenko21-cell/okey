@@ -78,41 +78,40 @@ async def send_recent_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     context.user_data['awaiting_recent_count'] = True
 
+# ========== НАДІСЛАТИ ОСТАННІ (Файл 3) ==========
+
 async def handle_recent_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обробник введення кількості останніх файлів"""
-    # Лог для діагностики
-    print(f"🔴🔴🔴 handle_recent_count ВИКЛИКАНО з текстом: {update.message.text}")
-    print(f"🔴 awaiting_recent_count: {context.user_data.get('awaiting_recent_count')}")
-    print(f"🔴 send_recent_album: {context.user_data.get('send_recent_album')}")
+    """Обробник введення кількості останніх файлів для звичайного перегляду"""
     
+    # Захист: якщо ми в меню видалення - ігноруємо
+    if context.user_data.get('in_delete_menu'):
+        return False
+        
     if not context.user_data.get('awaiting_recent_count'):
-        print("🔴 awaiting_recent_count = False, виходимо")
         return False
     
     try:
         count = int(update.message.text)
-        print(f"🔴 count = {count}")
         
         if count <= 0 or count > 50:
             await update.message.reply_text("❌ Введіть число від 1 до 50:")
             return True
         
         album_id = context.user_data.get('send_recent_album')
-        print(f"🔴 album_id = {album_id}")
         
         if not album_id:
-            print("🔴 album_id відсутній")
             return False
         
-        files = db.get_album_files(album_id, limit=count)
-        album = db.get_album(album_id)
+        # ВИПРАВЛЕННЯ: Отримуємо всі файли і беремо ОСТАННІ з кінця списку
+        all_files = db.get_album_files(album_id)
+        files = all_files[-count:] if all_files else []
         
-        print(f"🔴 знайдено файлів: {len(files)}")
+        album = db.get_album(album_id)
         
         if not files:
             await update.message.reply_text("📭 В альбомі немає файлів.")
         else:
-            await update.message.reply_text(f"📤 Надсилаю {len(files)} файлів з альбому '{album['name']}'...")
+            await update.message.reply_text(f"📤 Надсилаю останні {len(files)} файлів з альбому '{album['name']}'...")
             
             for file in files:
                 await send_file_by_type(update, context, file)
@@ -120,16 +119,15 @@ async def handle_recent_count(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Очищаємо стан
         context.user_data['awaiting_recent_count'] = False
         context.user_data.pop('send_recent_album', None)
-        print("🔴 стан очищено")
         
         # Показуємо кнопку повернення
         album_keyboard = ReplyKeyboardMarkup([
-            [KeyboardButton("📤 Надіслати весь альбом")],
-            [KeyboardButton("⏳ Надіслати останні")],
-            [KeyboardButton("📅 Надіслати за датою")],
-            [KeyboardButton("⋯ Додаткові дії")],
-            [KeyboardButton("◀️ Вийти з альбому")]
-        ], resize_keyboard=True)
+        [KeyboardButton("📤 Надіслати весь альбом")],
+        [KeyboardButton("⏳ Надіслати останні"), KeyboardButton("⏮ Надіслати перші")],
+        [KeyboardButton("🔢 Надіслати проміжок"), KeyboardButton("📅 Надіслати за датою")],
+        [KeyboardButton("⋯ Додаткові дії")],
+        [KeyboardButton("◀️ Вийти з альбому")]
+    ], resize_keyboard=True)
         
         await update.message.reply_text(
             "✅ Готово!",
@@ -138,7 +136,6 @@ async def handle_recent_count(update: Update, context: ContextTypes.DEFAULT_TYPE
         return True
         
     except ValueError:
-        print("🔴 помилка ValueError - введено не число")
         await update.message.reply_text("❌ Будь ласка, введіть число:")
         return True
 # ========== НАДІСЛАТИ ЗА ДАТОЮ ==========
@@ -194,12 +191,12 @@ async def handle_date_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Повертаємо клавіатуру альбому
         album_keyboard = ReplyKeyboardMarkup([
-            [KeyboardButton("📤 Надіслати весь альбом")],
-            [KeyboardButton("⏳ Надіслати останні")],
-            [KeyboardButton("📅 Надіслати за датою")],
-            [KeyboardButton("⋯ Додаткові дії")],
-            [KeyboardButton("◀️ Вийти з альбому")]
-        ], resize_keyboard=True)
+        [KeyboardButton("📤 Надіслати весь альбом")],
+        [KeyboardButton("⏳ Надіслати останні"), KeyboardButton("⏮ Надіслати перші")],
+        [KeyboardButton("🔢 Надіслати проміжок"), KeyboardButton("📅 Надіслати за датою")],
+        [KeyboardButton("⋯ Додаткові дії")],
+        [KeyboardButton("◀️ Вийти з альбому")]
+    ], resize_keyboard=True)
         
         await update.message.reply_text(
             "✅ Готово!",
@@ -212,6 +209,100 @@ async def handle_date_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "❌ Невірний формат. Введіть дату як РРРР-ММ-ДД\n"
             "Наприклад: 2024-01-31"
         )
+        return True
+    
+
+# ========== НАДІСЛАТИ ПЕРШІ (Файл 3) ==========
+async def handle_first_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get('in_delete_menu'): return False
+    if not context.user_data.get('awaiting_first_count'): return False
+
+    try:
+        count = int(update.message.text)
+        if count <= 0 or count > 50:
+            await update.message.reply_text("❌ Введіть число від 1 до 50:")
+            return True
+        
+        album_id = context.user_data.get('send_first_album')
+        all_files = db.get_album_files(album_id)
+        
+        # Беремо перші файли з початку масиву
+        files = all_files[:count] if all_files else []
+        album = db.get_album(album_id)
+        
+        if not files:
+            await update.message.reply_text("📭 В альбомі немає файлів.")
+        else:
+            await update.message.reply_text(f"📤 Надсилаю перші {len(files)} файлів з альбому '{album['name']}'...")
+            for file in files:
+                await send_file_by_type(update, context, file)
+        
+        context.user_data['awaiting_first_count'] = False
+        context.user_data.pop('send_first_album', None)
+        
+        album_keyboard = ReplyKeyboardMarkup([
+            [KeyboardButton("📤 Надіслати весь альбом")],
+            [KeyboardButton("⏳ Надіслати останні"), KeyboardButton("⏮ Надіслати перші")],
+            [KeyboardButton("🔢 Надіслати проміжок"), KeyboardButton("📅 Надіслати за датою")],
+            [KeyboardButton("⋯ Додаткові дії")],
+            [KeyboardButton("◀️ Вийти з альбому")]
+        ], resize_keyboard=True)
+        
+        await update.message.reply_text("✅ Готово!", reply_markup=album_keyboard)
+        return True
+    except ValueError:
+        await update.message.reply_text("❌ Будь ласка, введіть число:")
+        return True
+
+# ========== НАДІСЛАТИ ПРОМІЖОК (Файл 3) ==========
+async def handle_range_input_normal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get('in_delete_menu'): return False
+    if not context.user_data.get('awaiting_range'): return False
+    
+    text = update.message.text.strip().replace(' ', '')
+    if '-' not in text:
+        await update.message.reply_text("❌ Використовуйте формат X-Y (наприклад: 10-20)")
+        return True
+    
+    try:
+        start, end = map(int, text.split('-'))
+        if start <= 0 or end <= 0 or start > end:
+            await update.message.reply_text("❌ Невірний проміжок. X має бути менше Y")
+            return True
+        
+        album_id = context.user_data.get('send_range_album')
+        all_files = db.get_album_files(album_id)
+        total_files = len(all_files) if all_files else 0
+        
+        if start > total_files:
+            await update.message.reply_text(f"❌ Початкове число більше загальної кількості ({total_files})")
+            return True
+        if end > total_files:
+            end = total_files
+            await update.message.reply_text(f"⚠️ Кінцеве число скориговано до {total_files}")
+            
+        files = all_files[start-1:end]
+        album = db.get_album(album_id)
+        
+        await update.message.reply_text(f"📤 Надсилаю файли з {start} по {end} з альбому '{album['name']}'...")
+        for file in files:
+            await send_file_by_type(update, context, file)
+            
+        context.user_data['awaiting_range'] = False
+        context.user_data.pop('send_range_album', None)
+        
+        album_keyboard = ReplyKeyboardMarkup([
+            [KeyboardButton("📤 Надіслати весь альбом")],
+            [KeyboardButton("⏳ Надіслати останні"), KeyboardButton("⏮ Надіслати перші")],
+            [KeyboardButton("🔢 Надіслати проміжок"), KeyboardButton("📅 Надіслати за датою")],
+            [KeyboardButton("⋯ Додаткові дії")],
+            [KeyboardButton("◀️ Вийти з альбому")]
+        ], resize_keyboard=True)
+        
+        await update.message.reply_text("✅ Готово!", reply_markup=album_keyboard)
+        return True
+    except ValueError:
+        await update.message.reply_text("❌ Невірний формат. Введіть числа через дефіс:")
         return True
 
 # ========== ІНФОРМАЦІЯ ПРО АЛЬБОМ ==========

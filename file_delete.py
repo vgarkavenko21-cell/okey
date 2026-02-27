@@ -5,138 +5,94 @@ import helpers
 
 db = Database()
 
-# ========== ОБРОБНИК КНОПОК МЕНЮ ВИДАЛЕННЯ (РЕПЛАЙ КЛАВІАТУРА) ==========
+# ========== ОБРОБНИК КНОПОК МЕНЮ ВИДАЛЕННЯ ==========
 
+# Повна заміна функції у Файлі 2
 async def handle_delete_menu_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE, text, album_id):
-    """Обробка кнопок меню видалення (реплай клавіатура)"""
+    """Обробка кнопок видалення з префіксом 'Надіслати:'"""
     
-    if text == "📤 Надіслати всі файли":
+    if text == "Надіслати: Весь альбом":
         files = db.get_album_files(album_id)
         if not files:
             await update.message.reply_text("📭 В альбомі немає файлів.")
             return True
-        
-        await update.message.reply_text(f"📤 Надсилаю всі {len(files)} файлів для видалення...")
-        
+        await update.message.reply_text(f"🗑 Надсилаю всі {len(files)} файлів з кнопкою видалення:")
         for index, file in enumerate(files, 1):
-            await send_file_with_delete_button(update, context, file, index)
+            await delete_send_file_with_button(update, context, file, index)
         return True
     
-    elif text == "⏳ Надіслати останні":
+    elif text == "Надіслати: Останні":
         context.user_data['delete_action'] = 'recent'
-        await update.message.reply_text(
-            "⏳ Введіть кількість останніх файлів (наприклад: 5, 10, 20):"
-        )
+        context.user_data['awaiting_delete_input'] = True
+        await update.message.reply_text("⏳ Скільки останніх файлів надіслати для видалення?")
         return True
     
-    elif text == "⏮ Надіслати перші":
+    elif text == "Надіслати: Перші":
         context.user_data['delete_action'] = 'first'
-        await update.message.reply_text(
-            "⏮ Введіть кількість перших файлів (наприклад: 5, 10, 20):"
-        )
+        context.user_data['awaiting_delete_input'] = True
+        await update.message.reply_text("⏮ Скільки перших файлів надіслати для видалення?")
         return True
     
-    elif text == "🔢 Надіслати проміжок":
+    elif text == "Надіслати: Проміжок":
         context.user_data['delete_action'] = 'range'
-        await update.message.reply_text(
-            "🔢 Введіть проміжок у форматі X-Y (наприклад: 10-20):\n\n"
-            "Файли нумеруються від 1 до загальної кількості."
-        )
+        context.user_data['awaiting_delete_input'] = True
+        await update.message.reply_text("🔢 Введіть проміжок (наприклад: 1-10):")
         return True
     
-    elif text == "📅 Надіслати за датою":
+    elif text == "Надіслати: За датою":
         context.user_data['delete_action'] = 'date'
-        await update.message.reply_text(
-            "📅 Введіть дату у форматі РРРР-ММ-ДД\n"
-            "Наприклад: 2024-01-31"
-        )
+        context.user_data['awaiting_delete_input'] = True
+        await update.message.reply_text("📅 Введіть дату для видалення (РРРР-ММ-ДД):")
         return True
     
     elif text == "◀️ Назад до альбому":
-        context.user_data['in_delete_menu'] = False
-        context.user_data.pop('delete_action', None)
-        return "back_to_album"  # Важливо повертати саме це значення
+        return "back_to_album"
     
     return False
 
-# ========== УНІВЕРСАЛЬНИЙ ОБРОБНИК ==========
+# ========== УНІВЕРСАЛЬНИЙ ОБРОБНИК ТЕКСТУ ==========
 
 async def handle_delete_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Універсальний обробник текстових повідомлень для видалення"""
+    
+    print(f"🔍 handle_delete_text: text='{update.message.text}'")
+    print(f"📊 in_delete_menu={context.user_data.get('in_delete_menu')}, delete_action={context.user_data.get('delete_action')}")
+    
+    # Якщо не в режимі видалення - пропускаємо
+    if not context.user_data.get('in_delete_menu'):
+        print("❌ Не в режимі видалення")
+        return False
+    
+    # Якщо немає активної дії - пропускаємо
     if not context.user_data.get('delete_action'):
+        print("❌ Немає активної дії")
         return False
     
     action = context.user_data.get('delete_action')
+    print(f"✅ Обробляємо дію: {action} з текстом: {update.message.text}")
     
-    if action in ['recent', 'first']:
-        return await handle_delete_number_input(update, context)
+    # Обробляємо відповідно до дії
+    if action == 'recent':
+        return await delete_handle_recent_input(update, context)
+    elif action == 'first':
+        return await delete_handle_first_input(update, context)
     elif action == 'range':
-        return await handle_delete_range_input(update, context)
+        return await delete_handle_range_input(update, context)
     elif action == 'date':
-        return await handle_delete_date_input(update, context)
+        return await delete_handle_date_input(update, context)
     
     return False
+# ========== ОБРОБНИКИ ВВЕДЕННЯ ==========
 
-# ========== ОБРОБНИК ВВЕДЕННЯ ДАТИ ==========
-
-async def handle_delete_date_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обробник введення дати для видалення"""
-    if context.user_data.get('delete_action') != 'date':
-        return False
+async def delete_handle_recent_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обробник введення кількості останніх файлів для видалення"""
     
-    date_str = update.message.text
-    album_id = context.user_data.get('current_album')
+    print(f"🔢 delete_handle_recent_input: {update.message.text}")
     
     try:
-        from datetime import datetime
-        # Перевіряємо формат дати
-        if '-' in date_str:
-            parts = date_str.split('-')
-            if len(parts) == 3:
-                year, month, day = parts
-                if len(year) == 4 and 1 <= int(month) <= 12 and 1 <= int(day) <= 31:
-                    formatted_date = f"{year}-{month.zfill(2)}-{day.zfill(2)}"
-                    datetime.strptime(formatted_date, '%Y-%m-%d')
-                    date_str = formatted_date
-                else:
-                    raise ValueError
-            else:
-                raise ValueError
-        else:
-            raise ValueError
-        
-        files = db.get_files_by_date(album_id, date_str)
-        
-        if not files:
-            await update.message.reply_text(f"📭 Немає файлів за {date_str}")
-        else:
-            await update.message.reply_text(f"📤 Надсилаю {len(files)} файлів за {date_str}...")
-            
-            for index, file in enumerate(files, 1):
-                from album_view import send_file_by_type
-                await send_file_by_type(update, context, file)
-        
-        context.user_data.pop('delete_action', None)
-        return True
-        
-    except (ValueError, IndexError):
-        await update.message.reply_text(
-            "❌ Невірний формат. Введіть дату як РРРР-ММ-ДД\n"
-            "Наприклад: 2024-01-31"
-        )
-        return True
-
-# ========== ОБРОБНИК ЧИСЛОВИХ ВВОДІВ ==========
-
-async def handle_delete_number_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обробник введення числа для останніх/перших файлів"""
-    if not context.user_data.get('delete_action'):
-        return False
-    
-    try:
-        number = int(update.message.text)
-        if number <= 0:
-            await update.message.reply_text("❌ Введіть додатнє число.")
+        count = int(update.message.text)
+        if count <= 0 or count > 50:
+            await update.message.reply_text("❌ Введіть число від 1 до 50:")
             return True
         
         album_id = context.user_data.get('current_album')
@@ -144,51 +100,72 @@ async def handle_delete_number_input(update: Update, context: ContextTypes.DEFAU
         
         if not files:
             await update.message.reply_text("📭 В альбомі немає файлів.")
+            context.user_data.pop('delete_action', None)
             return True
         
-        action = context.user_data.get('delete_action')
+        total_files = len(files)
+        selected_files = files[-count:]
+        start_num = total_files - len(selected_files) + 1
         
-        if action == 'recent':
-            selected_files = files[-number:]  # Останні
-            text = f"📤 Надсилаю останні {len(selected_files)} файлів..."
-        elif action == 'first':
-            selected_files = files[:number]  # Перші
-            text = f"📤 Надсилаю перші {len(selected_files)} файлів..."
-        else:
-            return False
+        await update.message.reply_text(f"📤 Надсилаю останні {len(selected_files)} файлів для видалення...")
         
-        await update.message.reply_text(text)
+        for idx, file in enumerate(selected_files, start_num):
+            await delete_send_file_with_button(update, context, file, idx)
         
-        # Нумеруємо файли
-        for index, file in enumerate(selected_files, 1):
-            await send_file_with_delete_button(update, context, file, index)
-        
-        # Очищаємо стан
         context.user_data.pop('delete_action', None)
+        return True
         
+    except ValueError:
+        await update.message.reply_text("❌ Введіть число.")
+        return True
+    
+
+async def delete_handle_first_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обробник введення кількості перших файлів для видалення"""
+    
+    try:
+        count = int(update.message.text)
+        if count <= 0 or count > 50:
+            await update.message.reply_text("❌ Введіть число від 1 до 50:")
+            return True
+        
+        album_id = context.user_data.get('current_album')
+        files = db.get_album_files(album_id)
+        
+        if not files:
+            await update.message.reply_text("📭 В альбомі немає файлів.")
+            context.user_data.pop('delete_action', None)
+            context.user_data.pop('awaiting_delete_input', None)
+            return True
+        
+        selected_files = files[:count]
+        
+        await update.message.reply_text(f"📤 Надсилаю перші {len(selected_files)} файлів для видалення...")
+        
+        for idx, file in enumerate(selected_files, 1):
+            await delete_send_file_with_button(update, context, file, idx)
+        
+        context.user_data.pop('delete_action', None)
+        context.user_data.pop('awaiting_delete_input', None)
         return True
         
     except ValueError:
         await update.message.reply_text("❌ Введіть число.")
         return True
 
-# ========== ОБРОБНИК ПРОМІЖКУ ==========
-
-async def handle_delete_range_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обробник введення проміжку X-Y"""
-    if context.user_data.get('delete_action') != 'range':
-        return False
+async def delete_handle_range_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обробник введення проміжку X-Y для видалення"""
+    
+    text = update.message.text.strip().replace(' ', '')
+    if '-' not in text:
+        await update.message.reply_text("❌ Використовуйте формат X-Y (наприклад: 10-20)")
+        return True
     
     try:
-        text = update.message.text.strip().replace(' ', '')
-        if '-' not in text:
-            await update.message.reply_text("❌ Невірний формат. Використовуйте X-Y (наприклад: 10-20)")
-            return True
-        
         start, end = map(int, text.split('-'))
         
         if start <= 0 or end <= 0 or start > end:
-            await update.message.reply_text("❌ Невірний проміжок. X має бути менше Y, і обидва додатні.")
+            await update.message.reply_text("❌ Невірний проміжок. X має бути менше Y")
             return True
         
         album_id = context.user_data.get('current_album')
@@ -196,38 +173,63 @@ async def handle_delete_range_input(update: Update, context: ContextTypes.DEFAUL
         total_files = len(files)
         
         if start > total_files:
-            await update.message.reply_text(f"❌ Початкове число більше загальної кількості файлів ({total_files})")
+            await update.message.reply_text(f"❌ Початкове число більше {total_files}")
             return True
         
         if end > total_files:
             end = total_files
             await update.message.reply_text(f"⚠️ Кінцеве число скориговано до {total_files}")
         
-        selected_files = files[start-1:end]  # -1 бо індексація з 0
-        await update.message.reply_text(f"📤 Надсилаю файли з {start} по {end} (всього {len(selected_files)})...")
+        selected_files = files[start-1:end]
         
-        # Нумеруємо файли
-        for index, file in enumerate(selected_files, start):
-            await send_file_with_delete_button(update, context, file, index)
+        await update.message.reply_text(f"📤 Надсилаю файли з {start} по {end} (всього {len(selected_files)}) для видалення...")
         
-        # Очищаємо стан
+        for idx, file in enumerate(selected_files, start):
+            await delete_send_file_with_button(update, context, file, idx)
+        
         context.user_data.pop('delete_action', None)
-        
+        context.user_data.pop('awaiting_delete_input', None)
         return True
         
     except ValueError:
-        await update.message.reply_text("❌ Невірний формат. Введіть числа через дефіс (наприклад: 10-20)")
+        await update.message.reply_text("❌ Невірний формат. Введіть числа через дефіс")
         return True
 
-# ========== НАДІСЛАННЯ ФАЙЛУ З КНОПКОЮ ВИДАЛЕННЯ ==========
+async def delete_handle_date_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обробник введення дати для видалення"""
+    
+    date_str = update.message.text
+    album_id = context.user_data.get('current_album')
+    
+    try:
+        from datetime import datetime
+        datetime.strptime(date_str, '%Y-%m-%d')
+        
+        files = db.get_files_by_date(album_id, date_str)
+        
+        if not files:
+            await update.message.reply_text(f"📭 Немає файлів за {date_str}")
+        else:
+            await update.message.reply_text(f"📤 Надсилаю {len(files)} файлів за {date_str} для видалення...")
+            
+            for idx, file in enumerate(files, 1):
+                await delete_send_file_with_button(update, context, file, idx)
+        
+        context.user_data.pop('delete_action', None)
+        context.user_data.pop('awaiting_delete_input', None)
+        return True
+        
+    except ValueError:
+        await update.message.reply_text("❌ Невірний формат. Введіть дату як РРРР-ММ-ДД")
+        return True
 
-async def send_file_with_delete_button(update: Update, context: ContextTypes.DEFAULT_TYPE, file_data, file_number):
+# ========== НАДСИЛАННЯ ФАЙЛУ З КНОПКОЮ ВИДАЛЕННЯ ==========
+
+async def delete_send_file_with_button(update: Update, context: ContextTypes.DEFAULT_TYPE, file_data, file_number):
     """Надсилання файлу з інлайн кнопкою видалення"""
     file_id = file_data['telegram_file_id']
     file_type = file_data['file_type']
-    file_name = file_data['file_name'] or f"файл {file_number}"
     
-    # Створюємо інлайн кнопку видалення
     keyboard = [[InlineKeyboardButton(
         f"🗑 Видалити файл #{file_number}", 
         callback_data=f"delete_this_file_{file_data['file_id']}"
@@ -282,7 +284,6 @@ async def delete_this_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     file_id = int(query.data.split('_')[-1])
     
-    # Отримуємо інформацію про файл
     file = db.cursor.execute(
         "SELECT * FROM files WHERE file_id = ?", (file_id,)
     ).fetchone()
@@ -291,7 +292,6 @@ async def delete_this_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Файл не знайдено.")
         return
     
-    # Підтвердження видалення
     keyboard = [
         [
             InlineKeyboardButton("✅ Так, видалити", callback_data=f"confirm_file_delete_{file_id}"),
@@ -311,7 +311,6 @@ async def confirm_file_delete(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     file_id = int(query.data.split('_')[-1])
     
-    # Отримуємо album_id до видалення
     file = db.cursor.execute(
         "SELECT album_id FROM files WHERE file_id = ?", (file_id,)
     ).fetchone()

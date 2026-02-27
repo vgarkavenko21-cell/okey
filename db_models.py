@@ -242,12 +242,15 @@ class Database:
         self.conn.commit()
         return self.cursor.lastrowid
     
-    def get_album_files(self, album_id, limit=None):
-        """Отримати файли з альбому"""
-        query = "SELECT * FROM files WHERE album_id = ? ORDER BY added_at DESC"
+    def get_album_files(self, album_id, limit=None, order='ASC'):
+        """Отримати файли з альбому
+        order: 'ASC' - від найстаріших до найновіших (хронологічно)
+           'DESC' - від найновіших до найстаріших
+        """
+        query = "SELECT * FROM files WHERE album_id = ? ORDER BY added_at " + order
         if limit:
             query += f" LIMIT {limit}"
-        
+    
         return self.cursor.execute(query, (album_id,)).fetchall()
     
     def get_files_by_date(self, album_id, date):
