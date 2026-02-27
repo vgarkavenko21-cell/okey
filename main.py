@@ -1141,7 +1141,35 @@ async def admin_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
 
 ## ========== ГОЛОВНА ФУНКЦІЯ ==========
+async def handle_all_text_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Універсальний роутер для всіх текстових вводів (назви, цифри, дати)"""
+    
+    # 1. Якщо ми в процесі видалення, цим займається handle_delete_text (group 1)
+    if context.user_data.get('in_delete_menu') and context.user_data.get('delete_action'):
+        return False
 
+    # 2. Перевіряємо стани і направляємо текст у відповідну функцію
+    if context.user_data.get('awaiting_album_name'):
+        from album_manage import handle_album_name # або звідки вона у тебе імпортується
+        return await handle_album_name(update, context)
+        
+    elif context.user_data.get('awaiting_album_name_confirm'):
+        return await handle_delete_confirmation(update, context)
+        
+    elif context.user_data.get('awaiting_recent_count'):
+        return await handle_recent_count(update, context)
+        
+    elif context.user_data.get('awaiting_first_count'):
+        return await handle_first_count(update, context)
+        
+    elif context.user_data.get('awaiting_range'):
+        return await handle_range_input_normal(update, context)
+        
+    elif context.user_data.get('awaiting_date'):
+        return await handle_date_input(update, context)
+
+    # Якщо жоден стан не активний, пропускаємо текст далі (в group 3)
+    return False
 # ========== ГОЛОВНА ФУНКЦІЯ ==========
 
 def main():
@@ -1157,35 +1185,10 @@ def main():
         handle_delete_text
     ), group=1)
     
-    # 2. Звичайні обробники альбому (тільки ті, що є)
+    # 2. Звичайні текстові вводи (цифри, дати, назви) - ЄДИНИЙ РОУТЕР
     application.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND, 
-        handle_recent_count
-    ), group=2)
-
-    application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND, 
-        handle_first_count
-    ), group=2)
-    
-    application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND, 
-        handle_range_input_normal
-    ), group=2)
-    
-    application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND, 
-        handle_date_input
-    ), group=2)
-    
-    application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND, 
-        handle_album_name
-    ), group=2)
-    
-    application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND, 
-        handle_delete_confirmation
+        handle_all_text_inputs
     ), group=2)
     
     # 3. Кнопки альбому
@@ -1200,7 +1203,7 @@ def main():
         handle_menu
     ), group=4)
     
-    # Обробник файлів
+    # Обробник файлів (фото, відео, документи тощо)
     application.add_handler(MessageHandler(
         filters.PHOTO | filters.VIDEO | filters.Document.ALL | filters.AUDIO | filters.VOICE | filters.VIDEO_NOTE,
         handle_file
