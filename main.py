@@ -429,8 +429,8 @@ async def handle_album_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
         
         album = db.get_album(album_id)
         await update.message.reply_text(f"📤 Надсилаю всі {len(files)} файлів з альбому '{album['name']}'...")
-        for file in files:
-            await send_file_by_type(update, context, file)
+        for idx, file in enumerate(files, 1):
+            await send_file_by_type(update, context, file, index=idx)
         await update.message.reply_text("✅ Готово!")
         return True
     
@@ -783,8 +783,10 @@ async def show_shared_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ========== НАЛАШТУВАННЯ ==========
 
+# ========== НАЛАШТУВАННЯ (Файл 1) ==========
+
 async def show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показати налаштування"""
+    """Показати налаштування (адаптовано для виклику з меню та інлайн-кнопок)"""
     user_id = update.effective_user.id
     
     # Отримуємо поточні налаштування
@@ -805,6 +807,7 @@ async def show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text += f"• Додавання в спільні альбоми: {'✓' if settings.get('allow_add_to_shared') else '✗'}\n"
     
     keyboard = [
+        [InlineKeyboardButton("👁 Відображення файлів", callback_data="display_settings")],
         [InlineKeyboardButton("🔒 Налаштування приватності", callback_data="privacy_settings")],
         [InlineKeyboardButton("💎 Premium", callback_data="premium_info")],
         [InlineKeyboardButton("◀️ Назад", callback_data="back_to_main")]
@@ -812,11 +815,24 @@ async def show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await update.message.reply_text(
-        text,
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
+    # Перевіряємо, звідки викликана функція
+    query = update.callback_query
+    
+    if query:
+        # Якщо викликано з інлайн-кнопки (callback)
+        await query.answer()
+        await query.edit_message_text(
+            text,
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+    else:
+        # Якщо викликано з головного реплай-меню
+        await update.message.reply_text(
+            text,
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
 
 # ========== ОБРОБНИК КНОПОК ПОВЕРНЕННЯ ==========
 
@@ -877,6 +893,59 @@ async def back_to_albums(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='Markdown'
     )
 
+
+
+async def show_display_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показати меню налаштувань відображення"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    settings = helpers.get_user_display_settings(db, user_id)
+    
+    # Зрозуміла логіка: ✅ - увімкнено (відображається), ❌ - вимкнено (приховано)
+    num_btn = "✅ Відображати номер файлу" if settings.get('show_number', True) else "❌ Відображати номер"
+    date_btn = "✅ Відображати дату додавання" if settings.get('show_date', True) else "❌ Відображати дату"
+    
+    keyboard = [
+        [InlineKeyboardButton(num_btn, callback_data="toggle_show_number")],
+        [InlineKeyboardButton(date_btn, callback_data="toggle_show_date")],
+        [InlineKeyboardButton("◀️ Назад до налаштувань", callback_data="back_to_settings")]
+    ]
+    
+    await query.edit_message_text(
+        "👁 **Налаштування відображення**\n\n"
+        "Оберіть, яку інформацію додавати до файлів під час їх звичайного перегляду в альбомі:\n"
+        "*(✅ - увімкнено, ❌ - приховано)*",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
+    )
+
+async def toggle_display_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Змінити налаштування відображення"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    action = query.data
+    
+    # Отримуємо всі налаштування (щоб не затерти приватність)
+    settings = helpers.get_privacy_settings(db, user_id)
+    
+    # Додаємо дефолтні, якщо їх не було
+    if 'show_number' not in settings: settings['show_number'] = True
+    if 'show_date' not in settings: settings['show_date'] = True
+    
+    # Перемикаємо значення
+    if action == "toggle_show_number":
+        settings['show_number'] = not settings['show_number']
+    elif action == "toggle_show_date":
+        settings['show_date'] = not settings['show_date']
+        
+    # Зберігаємо
+    helpers.save_privacy_settings(db, user_id, settings)
+    
+    # Оновлюємо меню
+    await show_display_settings(update, context)
+
+
 # ========== ОБРОБНИК ВСІХ CALLBACK ==========
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -896,6 +965,16 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif data.startswith("open_album_"):
         await open_album(update, context)
+
+    # Додати всередині callback_handler
+    elif data == "display_settings":
+        await show_display_settings(update, context)
+        
+    elif data in ["toggle_show_number", "toggle_show_date"]:
+        await toggle_display_setting(update, context)
+        
+    elif data == "back_to_settings":
+        await show_settings(update, context)
     
     # ===== ДОДАТКОВІ ДІЇ =====
     elif data.startswith("album_info_"):

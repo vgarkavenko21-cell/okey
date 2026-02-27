@@ -6,23 +6,53 @@ import helpers
 # Глобальний об'єкт БД
 db = Database()
 
-async def send_file_by_type(update: Update, context: ContextTypes.DEFAULT_TYPE, file_data):
-    """Надсилання файлу за його типом"""
-    file_id = file_data['telegram_file_id']
-    file_type = file_data['file_type']
+# Повна заміна у Файлі 3
+async def send_file_by_type(update: Update, context: ContextTypes.DEFAULT_TYPE, file_data, index=None):
+    """Надсилання файлу за його типом із врахуванням налаштувань відображення"""
+    user_id = update.effective_user.id
+    
+    # Перетворюємо об'єкт БД на звичайний словник для безпечного доступу до ключів
+    try:
+        f_dict = dict(file_data)
+    except Exception:
+        f_dict = file_data
+        
+    file_id = f_dict.get('telegram_file_id')
+    file_type = f_dict.get('file_type')
+    
+    # Отримуємо налаштування користувача
+    settings = helpers.get_user_display_settings(db, user_id)
+    
+    # Формуємо підпис (caption)
+    caption_parts = []
+    if settings.get('show_number') and index is not None:
+        caption_parts.append(f"📄 Файл #{index}")
+        
+    if settings.get('show_date'):
+        # Пробуємо всі стандартні варіанти назв колонок для дати у БД
+        date_val = f_dict.get('created_at') or f_dict.get('added_at') or f_dict.get('date') or f_dict.get('upload_date')
+        
+        if date_val:
+            # Відрізаємо тільки дату (перші 10 символів: РРРР-ММ-ДД)
+            date_str = str(date_val)[:10]
+            caption_parts.append(f"📅 {date_str}")
+        
+    # З'єднуємо частини підпису
+    caption = " | ".join(caption_parts) if caption_parts else None
     
     try:
         if file_type == 'photo':
-            await update.message.reply_photo(photo=file_id)
+            await update.message.reply_photo(photo=file_id, caption=caption)
         elif file_type == 'video':
-            await update.message.reply_video(video=file_id)
+            await update.message.reply_video(video=file_id, caption=caption)
         elif file_type == 'document':
-            await update.message.reply_document(document=file_id)
+            await update.message.reply_document(document=file_id, caption=caption)
         elif file_type == 'audio':
-            await update.message.reply_audio(audio=file_id)
+            await update.message.reply_audio(audio=file_id, caption=caption)
         elif file_type == 'voice':
-            await update.message.reply_voice(voice=file_id)
+            await update.message.reply_voice(voice=file_id, caption=caption)
         elif file_type == 'circle':
+            # Кружечки (video_note) не підтримують текст у Telegram
             await update.message.reply_video_note(video_note=file_id)
     except Exception as e:
         await update.message.reply_text(f"❌ Помилка надсилання: {e}")
@@ -49,9 +79,11 @@ async def send_all_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await query.edit_message_text(f"📤 Надсилаю всі {len(files)} файлів з альбому '{album['name']}'...")
     
-    for file in files:
-        await send_file_by_type(update, context, file)
-    
+    # Замість: for file in files: await send_file_by_type(update, context, file)
+    # Замість: for file in files: await send_file_by_type(update, context, file)
+    for idx, file in enumerate(files, 1):
+        await send_file_by_type(update, context, file, index=idx)
+
     keyboard = [[InlineKeyboardButton("◀️ До альбому", callback_data=f"open_album_{album_id}")]]
     await query.message.reply_text(
         "✅ Готово!",
@@ -139,6 +171,7 @@ async def handle_recent_count(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("❌ Будь ласка, введіть число:")
         return True
 # ========== НАДІСЛАТИ ЗА ДАТОЮ ==========
+# ========== НАДІСЛАТИ ЗА ДАТОЮ ==========
 
 async def send_by_date_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Початок процесу надсилання за датою"""
@@ -160,6 +193,9 @@ async def send_by_date_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def handle_date_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обробник введення дати"""
+    # Захист від режиму видалення
+    if context.user_data.get('in_delete_menu'): return False
+    
     if not context.user_data.get('awaiting_date'):
         return False
     
@@ -182,8 +218,9 @@ async def handle_date_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text(f"📤 Надсилаю {len(files)} файлів за {date_str} з альбому '{album['name']}'...")
             
-            for file in files:
-                await send_file_by_type(update, context, file)
+            # ВИПРАВЛЕНО: Додано enumerate для передачі номера файлу
+            for idx, file in enumerate(files, 1):
+                await send_file_by_type(update, context, file, index=idx)
         
         # Очищаємо стан
         context.user_data['awaiting_date'] = False
@@ -191,12 +228,12 @@ async def handle_date_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Повертаємо клавіатуру альбому
         album_keyboard = ReplyKeyboardMarkup([
-        [KeyboardButton("📤 Надіслати весь альбом")],
-        [KeyboardButton("⏳ Надіслати останні"), KeyboardButton("⏮ Надіслати перші")],
-        [KeyboardButton("🔢 Надіслати проміжок"), KeyboardButton("📅 Надіслати за датою")],
-        [KeyboardButton("⋯ Додаткові дії")],
-        [KeyboardButton("◀️ Вийти з альбому")]
-    ], resize_keyboard=True)
+            [KeyboardButton("📤 Надіслати весь альбом")],
+            [KeyboardButton("⏳ Надіслати останні"), KeyboardButton("⏮ Надіслати перші")],
+            [KeyboardButton("🔢 Надіслати проміжок"), KeyboardButton("📅 Надіслати за датою")],
+            [KeyboardButton("⋯ Додаткові дії")],
+            [KeyboardButton("◀️ Вийти з альбому")]
+        ], resize_keyboard=True)
         
         await update.message.reply_text(
             "✅ Готово!",
@@ -234,8 +271,10 @@ async def handle_first_count(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text("📭 В альбомі немає файлів.")
         else:
             await update.message.reply_text(f"📤 Надсилаю перші {len(files)} файлів з альбому '{album['name']}'...")
-            for file in files:
-                await send_file_by_type(update, context, file)
+            
+            # ВИПРАВЛЕНО: Додано enumerate
+            for idx, file in enumerate(files, 1):
+                await send_file_by_type(update, context, file, index=idx)
         
         context.user_data['awaiting_first_count'] = False
         context.user_data.pop('send_first_album', None)
@@ -285,8 +324,10 @@ async def handle_range_input_normal(update: Update, context: ContextTypes.DEFAUL
         album = db.get_album(album_id)
         
         await update.message.reply_text(f"📤 Надсилаю файли з {start} по {end} з альбому '{album['name']}'...")
-        for file in files:
-            await send_file_by_type(update, context, file)
+        
+        # ВИПРАВЛЕНО: Додано enumerate, старт з потрібного номера
+        for idx, file in enumerate(files, start=start):
+            await send_file_by_type(update, context, file, index=idx)
             
         context.user_data['awaiting_range'] = False
         context.user_data.pop('send_range_album', None)

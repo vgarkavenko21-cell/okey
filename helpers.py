@@ -72,3 +72,18 @@ def save_privacy_settings(db, user_id, settings):
         (json.dumps(settings), user_id)
     )
     db.conn.commit()
+
+
+# Додати в кінець helpers.py
+
+def get_user_display_settings(db, user_id):
+    """Отримати налаштування відображення (зберігаються разом з privacy)"""
+    settings = get_privacy_settings(db, user_id)
+    
+    # Встановлюємо значення за замовчуванням, якщо їх ще немає
+    if 'show_number' not in settings:
+        settings['show_number'] = True
+    if 'show_date' not in settings:
+        settings['show_date'] = True
+        
+    return settings
