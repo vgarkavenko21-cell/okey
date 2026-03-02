@@ -1,4 +1,5 @@
 import logging
+import asyncio
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -198,7 +199,6 @@ async def show_my_albums(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Додаємо кнопки керування
     keyboard.append([
         InlineKeyboardButton("➕ Створити", callback_data="create_album"),
-        InlineKeyboardButton("🗑 Видалити", callback_data="delete_album_menu"),
         InlineKeyboardButton("🗂 Архів", callback_data="show_archived")
     ])
     
@@ -238,15 +238,35 @@ async def create_album_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 # ========== ОБРОБНИК ТЕКСТУ ДЛЯ СТВОРЕННЯ АЛЬБОМУ ==========
 
+# ========== ОБРОБНИК ТЕКСТУ ДЛЯ СТВОРЕННЯ АЛЬБОМУ ==========
+
 async def handle_album_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обробник введення назви альбому"""
+    """Обробник введення назви альбому (із захистом від дублів та кнопок)"""
     # Перевіряємо чи ми в стані очікування назви
     if not context.user_data.get('awaiting_album_name'):
-        return False  # Змінив return на False
+        return False
     
-    album_name = update.message.text
+    album_name = update.message.text.strip()
     user_id = update.effective_user.id
     
+    # 1. ЗАХИСТ ВІД КНОПОК МЕНЮ
+    # Список текстів кнопок, які не можна використовувати як назву
+    forbidden_names = [
+        "📷 Мої альбоми", "👥 Спільні альбоми", 
+        "📝 Мої нотатки", "🤝 Спільні нотатки", 
+        "⚙️ Налаштування", "◀️ Вийти з альбому",
+        "📤 Надіслати весь альбом", "⏳ Надіслати останні",
+        "📅 Надіслати за датою", "⋯ Додаткові дії",
+        "⏮ Надіслати перші", "🔢 Надіслати проміжок"
+    ]
+    
+    if album_name in forbidden_names or album_name.startswith("/"):
+        await update.message.reply_text(
+            "❌ Цю назву не можна використовувати (це команда або кнопка).\n"
+            "Будь ласка, введіть іншу назву для альбому:"
+        )
+        return True
+
     # Перевіряємо довжину назви
     if len(album_name) > 50:
         await update.message.reply_text(
@@ -261,13 +281,26 @@ async def handle_album_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Спробуйте ще раз:"
         )
         return True
+        
+    # 2. ЗАХИСТ ВІД ДУБЛІКАТІВ
+    # Отримуємо всі існуючі альбоми користувача (включно з архівованими)
+    existing_albums = db.get_user_albums(user_id, include_archived=True)
+    if existing_albums:
+        for album in existing_albums:
+            # Порівнюємо без врахування регістру
+            if album['name'].lower() == album_name.lower():
+                await update.message.reply_text(
+                    f"❌ Альбом з назвою '{album_name}' вже існує!\n"
+                    "Придумайте іншу назву:"
+                )
+                return True
     
     # Створюємо альбом в БД
     album_id = db.create_album(user_id, album_name)
     
-    # ВАЖЛИВО: Встановлюємо поточний альбом
+    # Встановлюємо поточний альбом
     context.user_data['current_album'] = album_id
-    context.user_data['album_keyboard_active'] = True  # Додав це
+    context.user_data['album_keyboard_active'] = True
     
     # Очищаємо стан очікування
     context.user_data['awaiting_album_name'] = False
@@ -683,6 +716,8 @@ async def make_shared_start(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     
 # ========== ЗБЕРЕЖЕННЯ ФАЙЛІВ ==========
 
+# ========== ЗБЕРЕЖЕННЯ ФАЙЛІВ ==========
+
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обробник отримання файлів (фото, відео, документи тощо)"""
     user_id = update.effective_user.id
@@ -735,7 +770,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         return
     
-    # Зберігаємо файл в БД
+    # Зберігаємо файл в БД (це відбувається для КОЖНОГО файлу)
     db.add_file(
         album_id=current_album,
         telegram_file_id=file_id,
@@ -745,11 +780,32 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         added_by=user_id
     )
     
-    # Підтвердження збереження
-    emoji = helpers.get_file_emoji(file_type)
-    await update.message.reply_text(
-        f"{emoji} Файл збережено в альбом '{album['name']}'"
-    )
+    # УГРУПОВАННЯ ПІДТВЕРДЖЕНЬ
+    media_group_id = update.message.media_group_id
+    
+    if media_group_id:
+        # Якщо файли надіслані групою (альбомом)
+        notified_key = f"notified_{media_group_id}"
+        
+        # Перевіряємо, чи ми вже відправляли підтвердження для цієї групи
+        if not context.user_data.get(notified_key):
+            context.user_data[notified_key] = True
+            await update.message.reply_text(
+                f"✅ Групу файлів успішно збережено в альбом '{album['name']}'!"
+            )
+            
+            # Фонове завдання: очистити пам'ять про цю групу через 10 секунд
+            async def clear_media_cache():
+                await asyncio.sleep(10)
+                context.user_data.pop(notified_key, None)
+                
+            asyncio.create_task(clear_media_cache())
+    else:
+        # Якщо файл надіслано один (не групою)
+        emoji = helpers.get_file_emoji(file_type)
+        await update.message.reply_text(
+            f"{emoji} Файл збережено в альбом '{album['name']}'"
+        )
 # ========== СПІЛЬНІ АЛЬБОМИ ==========
 
 async def show_shared_albums(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1223,16 +1279,17 @@ async def admin_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_all_text_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Універсальний роутер для всіх текстових вводів (назви, цифри, дати)"""
     
-    # 1. Якщо ми в процесі видалення, цим займається handle_delete_text (group 1)
+    # 1. Якщо ми в процесі видалення, цим займається handle_delete_text
     if context.user_data.get('in_delete_menu') and context.user_data.get('delete_action'):
         return False
 
     # 2. Перевіряємо стани і направляємо текст у відповідну функцію
     if context.user_data.get('awaiting_album_name'):
-        from album_manage import handle_album_name # або звідки вона у тебе імпортується
+        # Функція є в main.py, додатковий імпорт не потрібен!
         return await handle_album_name(update, context)
         
     elif context.user_data.get('awaiting_album_name_confirm'):
+        # Функція є в main.py
         return await handle_delete_confirmation(update, context)
         
     elif context.user_data.get('awaiting_recent_count'):
@@ -1247,7 +1304,6 @@ async def handle_all_text_inputs(update: Update, context: ContextTypes.DEFAULT_T
     elif context.user_data.get('awaiting_date'):
         return await handle_date_input(update, context)
 
-    # Якщо жоден стан не активний, пропускаємо текст далі (в group 3)
     return False
 # ========== ГОЛОВНА ФУНКЦІЯ ==========
 
