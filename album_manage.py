@@ -161,7 +161,8 @@ async def confirm_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         "✅ Альбом успішно архівовано!",
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("📷 До моїх альбомів", callback_data="back_to_albums")
+            InlineKeyboardButton("🗂 До архіву", callback_data="show_archived"),
+            InlineKeyboardButton("📷 Мої альбоми", callback_data="back_to_albums")
         ]])
     )
 

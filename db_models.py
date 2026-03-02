@@ -206,21 +206,52 @@ class Database:
         self.cursor.execute(
             "UPDATE albums SET is_archived = 0 WHERE album_id = ?",
             (album_id,)
-        )
+        )  
         # Логуємо розархівацію
         self.cursor.execute('''
-            INSERT INTO archive_log (album_id, user_id, action)
-            VALUES (?, ?, 'unarchive')
+        INSERT INTO archive_log (album_id, user_id, action)
+        VALUES (?, ?, 'unarchive')
         ''', (album_id, user_id))
         self.conn.commit()
-    
+
+
+
+# === ВСТАВЛЯТИ СЮДИ (після unarchive_album) ===
+
     def delete_album(self, album_id):
-        """Видалити альбом (каскадно видаляться всі файли)"""
-        self.cursor.execute(
-            "DELETE FROM albums WHERE album_id = ?",
-            (album_id,)
-        )
-        self.conn.commit()
+        """Видалити альбом з усіма файлами та зв'язками"""
+        try:
+            album_id = int(album_id) # Гарантуємо, що це число
+            
+            # 1. Видаляємо всі файли альбому
+            self.cursor.execute("DELETE FROM files WHERE album_id = ?", (album_id,))
+            
+            # 2. Видаляємо лог архівації (якщо альбом колись архівувався)
+            try:
+                self.cursor.execute("DELETE FROM archive_log WHERE album_id = ?", (album_id,))
+            except:
+                pass 
+                
+            # 3. Видаляємо зі спільних альбомів (якщо вони є у твоїй структурі)
+            try:
+                self.cursor.execute("DELETE FROM shared_albums WHERE album_id = ?", (album_id,))
+            except:
+                pass
+                
+            # 4. Видаляємо сам альбом
+            self.cursor.execute("DELETE FROM albums WHERE album_id = ?", (album_id,))
+            
+            self.conn.commit()
+            return True
+        except Exception as e:
+            print(f"❌ Помилка БД при видаленні альбому {album_id}: {e}")
+            self.conn.rollback()
+            return False
+
+    # ============================================
+    
+    # ВИПРАВЛЕНО: Додано правильні відступи (4 пробіли), щоб метод був усередині класу
+    
     
     # ========== МЕТОДИ ДЛЯ РОБОТИ З ФАЙЛАМИ ==========
     

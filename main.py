@@ -91,6 +91,51 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=MAIN_MENU
     )
 
+
+# ========== ПЕРЕГЛЯД АРХІВОВАНИХ АЛЬБОМІВ ==========
+
+async def show_archived_albums(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показати список архівованих альбомів"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    
+    # Отримуємо ТІЛЬКИ архівовані альбоми
+    archived_albums = db.cursor.execute(
+        "SELECT * FROM albums WHERE user_id = ? AND is_archived = 1 ORDER BY created_at DESC",
+        (user_id,)
+    ).fetchall()
+    
+    if not archived_albums:
+        await query.edit_message_text(
+            "🗂 У вас немає архівованих альбомів.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("◀️ Назад", callback_data="back_to_albums")
+            ]])
+        )
+        return
+    
+    text = "🗂 **Архівовані альбоми**\n\n"
+    keyboard = []
+    
+    for album in archived_albums:
+        album_text = f"{album['name']} ({album['files_count']} файлів)"
+        keyboard.append([InlineKeyboardButton(
+            album_text, 
+            callback_data=f"unarchive_album_{album['album_id']}"
+        )])
+    
+    # Додаємо кнопку "Назад" внизу
+    keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="back_to_albums")])
+    
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
+    )
+
+
 # ========== КОМАНДА /admin (АДМІН ПАНЕЛЬ) ==========
 
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -416,6 +461,28 @@ async def start_delete_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         parse_mode='Markdown'
     )
 
+# ========== РОЗАРХІВАЦІЯ АЛЬБОМУ ==========
+
+async def unarchive_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Розархівувати альбом"""
+    query = update.callback_query
+    await query.answer()
+    
+    album_id = int(query.data.split('_')[2])
+    user_id = query.from_user.id
+    
+    # Розархівовуємо альбом
+    db.unarchive_album(album_id, user_id)
+    
+    # Показуємо повідомлення про успіх
+    await query.edit_message_text(
+        "✅ Альбом успішно розархівовано!",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🗂 До архіву", callback_data="show_archived"),
+            InlineKeyboardButton("📷 Мої альбоми", callback_data="back_to_albums")
+        ]])
+    )
+
 # ========== ОБРОБНИК КНОПОК АЛЬБОМУ (Файл 1) ==========
 
 async def handle_album_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -610,9 +677,15 @@ async def archive_album_confirm(update: Update, context: ContextTypes.DEFAULT_TY
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
+
 async def delete_album_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE, album_id):
-    """Підтвердження видалення альбому"""
+    """Підтвердження видалення альбому (виклик з текстового меню)"""
     album = db.get_album(album_id)
+    
+    if not album:
+        await update.message.reply_text("❌ Альбом не знайдено.")
+        return
+        
     context.user_data['deleting_album'] = album_id
     context.user_data['awaiting_album_name_confirm'] = True
     context.user_data['album_name_to_delete'] = album['name']  # Зберігаємо назву для перевірки
@@ -625,90 +698,67 @@ async def delete_album_confirm(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def handle_delete_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обробник підтвердження назви для видалення альбому"""
-    # Логуємо для відлагодження
-    print(f"🔍 handle_delete_confirmation викликано")
-    print(f"📊 user_data: {context.user_data}")
-    
     if not context.user_data.get('awaiting_album_name_confirm'):
-        print("❌ awaiting_album_name_confirm = False")
         return False
     
     user_input = update.message.text.strip()
     correct_name = context.user_data.get('album_name_to_delete')
     album_id = context.user_data.get('deleting_album')
-    user_id = update.effective_user.id
-    
-    print(f"📝 user_input: '{user_input}'")
-    print(f"📝 correct_name: '{correct_name}'")
-    print(f"📝 album_id: {album_id}")
     
     if not correct_name or not album_id:
-        print("❌ correct_name або album_id відсутні")
         return False
     
     if user_input == correct_name:
-        print("✅ Назва співпадає")
-        
         # Отримуємо альбом для перевірки
         album = db.get_album(album_id)
         
         if not album:
-            print("❌ Альбом не знайдено в БД")
-            await update.message.reply_text("❌ Альбом не знайдено.")
-            
-            # Очищаємо дані
+            await update.message.reply_text("❌ Альбом не знайдено в базі даних.")
             context.user_data['awaiting_album_name_confirm'] = False
             context.user_data.pop('deleting_album', None)
             context.user_data.pop('album_name_to_delete', None)
             return True
         
-        # Видаляємо альбом з БД
-        print(f"🗑 Видаляємо альбом ID: {album_id}")
-        db.delete_album(album_id)
-        print("✅ Альбом видалено з БД")
+        # Перевіряємо, чи успішно видалила база даних!
+        success = db.delete_album(album_id)
         
-        # Логування для адміна
-        print(f"🗑 Альбом '{correct_name}' (ID: {album_id}) видалено користувачем {user_id}")
-        
-        # Очищаємо всі дані
-        context.user_data['awaiting_album_name_confirm'] = False
-        context.user_data.pop('deleting_album', None)
-        context.user_data.pop('album_name_to_delete', None)
-        context.user_data.pop('in_additional_menu', None)
-        context.user_data.pop('current_album', None)
-        context.user_data['album_keyboard_active'] = False
-        
-        print("📊 user_data після очищення:", context.user_data)
-        
-        # Показуємо підтвердження і повертаємось в головне меню
-        await update.message.reply_text(
-            f"✅ Альбом '{correct_name}' успішно видалено!",
-            reply_markup=MAIN_MENU
-        )
-        
-        # Показуємо список альбомів, що залишились
+        if success:
+            # Очищаємо всі дані тільки якщо видалення пройшло успішно
+            context.user_data['awaiting_album_name_confirm'] = False
+            context.user_data.pop('deleting_album', None)
+            context.user_data.pop('album_name_to_delete', None)
+            context.user_data.pop('in_additional_menu', None)
+            context.user_data.pop('current_album', None)
+            context.user_data['album_keyboard_active'] = False
+            
+            await update.message.reply_text(
+                f"✅ Альбом '{correct_name}' остаточно видалено з бази!",
+                reply_markup=MAIN_MENU
+            )
+        else:
+            await update.message.reply_text(
+                f"❌ Помилка: база даних відхилила видалення альбому '{correct_name}'. "
+                f"Можливо, до нього прив'язані інші дані."
+            )
+            
+        # Показуємо оновлений список альбомів
         await show_my_albums(update, context)
-        
         return True
     else:
         # Назва не співпадає
-        print(f"❌ Назва '{user_input}' не співпадає з '{correct_name}'")
+        await update.message.reply_text("❌ Назва не співпадає. Видалення скасовано.")
         
-        await update.message.reply_text(
-            f"❌ Назва не співпадає. Видалення скасовано."
-        )
-        
-        # Очищаємо дані
+        # Очищаємо дані очікування
         context.user_data['awaiting_album_name_confirm'] = False
         context.user_data.pop('deleting_album', None)
         context.user_data.pop('album_name_to_delete', None)
         
-        # Повертаємось в додаткове меню
+        # Повертаємось в додаткове меню альбому
         if album_id:
             context.user_data['in_additional_menu'] = True
             await return_to_album_keyboard(update, context, album_id)
         return True
-
+        
 async def make_shared_start(update: Update, context: ContextTypes.DEFAULT_TYPE, album_id):
     """Початок створення спільного альбому"""
     await update.message.reply_text("👥 Функція спільних альбомів в розробці")
@@ -937,7 +987,6 @@ async def back_to_albums(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Додаємо кнопки керування
     keyboard.append([
         InlineKeyboardButton("➕ Створити", callback_data="create_album"),
-        InlineKeyboardButton("🗑 Видалити", callback_data="delete_album_menu"),
         InlineKeyboardButton("🗂 Архів", callback_data="show_archived")
     ])
     
@@ -1013,8 +1062,14 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "create_album":
         await create_album_start(update, context)
     
+    elif data.startswith("unarchive_album_"):
+        await unarchive_album(update, context)
+    
     elif data == "back_to_albums":
         await back_to_albums(update, context)
+
+    elif data == "show_archived":
+        await show_archived_albums(update, context)
     
     elif data == "back_to_main":
         await back_to_main_menu(update, context)
