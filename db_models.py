@@ -19,9 +19,9 @@ class Database:
         self.cursor.execute("PRAGMA foreign_keys = ON")
     
     def create_tables(self):
-        """Створення всіх таблиць згідно ТЗ"""
+        """Створення всіх таблиць та оновлення структури"""
         
-        # Таблиця користувачів
+        # 1. Створюємо основну таблицю користувачів (повна структура)
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
@@ -32,11 +32,19 @@ class Database:
                 is_premium BOOLEAN DEFAULT 0,
                 premium_until TIMESTAMP,
                 privacy_settings TEXT DEFAULT '{"allow_invites": "all", "allow_add_to_shared": true, "allow_add_to_shared_notes": true}',
+                display_settings TEXT DEFAULT '{"show_number": true, "show_date": true}',
                 is_blocked BOOLEAN DEFAULT 0
             )
         ''')
-        
-        # Таблиця альбомів
+
+        # ПЕРЕВІРКА: чи є колонка display_settings (якщо база стара)
+        self.cursor.execute("PRAGMA table_info(users)")
+        columns = [column[1] for column in self.cursor.fetchall()]
+        if 'display_settings' not in columns:
+            print("⚠️ Додаю відсутню колонку display_settings...")
+            self.cursor.execute('ALTER TABLE users ADD COLUMN display_settings TEXT DEFAULT \'{"show_number": true, "show_date": true}\'')
+
+        # 2. Таблиця альбомів
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS albums (
                 album_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -51,7 +59,7 @@ class Database:
             )
         ''')
         
-        # Таблиця файлів (тільки file_id, самі файли не зберігаємо!)
+        # 3. Таблиця файлів
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS files (
                 file_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,7 +75,7 @@ class Database:
             )
         ''')
         
-        # Таблиця спільних альбомів (ВИПРАВЛЕНО: додана кома)
+        # 4. Таблиця спільних альбомів
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS shared_albums (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -81,82 +89,14 @@ class Database:
             )
         ''')
 
-        
-        # Таблиця нотаток
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS notes (
-                note_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                title TEXT,
-                content TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                is_shared BOOLEAN DEFAULT 0,
-                FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
-            )
-        ''')
-        
-        # Таблиця спільних нотаток
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS shared_notes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                note_id INTEGER NOT NULL,
-                user_id INTEGER NOT NULL,
-                access_level TEXT CHECK(access_level IN ('view', 'edit')) DEFAULT 'view',
-                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (note_id) REFERENCES notes (note_id) ON DELETE CASCADE,
-                FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE,
-                UNIQUE(note_id, user_id)
-            )
-        ''')
-        
-        # Таблиця преміум підписок
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS premium_subscriptions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                subscription_type TEXT CHECK(subscription_type IN ('channel', 'paid', 'manual')),
-                channel_id TEXT,
-                granted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                expires_at TIMESTAMP,
-                is_active BOOLEAN DEFAULT 1,
-                FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
-            )
-        ''')
-
-    
-
-            # Таблиця користувачів (додайте поле)
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                username TEXT,
-                first_name TEXT,
-                last_name TEXT,
-                registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                is_premium BOOLEAN DEFAULT 0,
-                premium_until TIMESTAMP,
-                rivacy_settings TEXT DEFAULT '{"allow_invites": "all", "allow_add_to_shared": true, "allow_add_to_shared_notes": true}',
-                display_settings TEXT DEFAULT '{"show_number": true, "show_date": true}',
-                is_blocked BOOLEAN DEFAULT 0
-            )
-        ''')
-        
-        # Таблиця для архівації (додатково, для зручності)
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS archive_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                album_id INTEGER,
-                user_id INTEGER,
-                action TEXT CHECK(action IN ('archive', 'unarchive')),
-                action_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (album_id) REFERENCES albums (album_id),
-                FOREIGN KEY (user_id) REFERENCES users (user_id)
-            )
-        ''')
+        # 5. Решта таблиць (нотатки, преміум, логи)
+        self.cursor.execute('CREATE TABLE IF NOT EXISTS notes (note_id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, title TEXT, content TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, is_shared BOOLEAN DEFAULT 0, FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE)')
+        self.cursor.execute('CREATE TABLE IF NOT EXISTS shared_notes (id INTEGER PRIMARY KEY AUTOINCREMENT, note_id INTEGER NOT NULL, user_id INTEGER NOT NULL, access_level TEXT CHECK(access_level IN ("view", "edit")) DEFAULT "view", added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (note_id) REFERENCES notes (note_id) ON DELETE CASCADE, FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE, UNIQUE(note_id, user_id))')
+        self.cursor.execute('CREATE TABLE IF NOT EXISTS premium_subscriptions (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, subscription_type TEXT CHECK(subscription_type IN ("channel", "paid", "manual")), channel_id TEXT, granted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, expires_at TIMESTAMP, is_active BOOLEAN DEFAULT 1, FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE)')
+        self.cursor.execute('CREATE TABLE IF NOT EXISTS archive_log (id INTEGER PRIMARY KEY AUTOINCREMENT, album_id INTEGER, user_id INTEGER, action TEXT CHECK(action IN ("archive", "unarchive")), action_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (album_id) REFERENCES albums (album_id), FOREIGN KEY (user_id) REFERENCES users (user_id))')
         
         self.conn.commit()
-        print("✅ Таблиці SQLite успішно створені")
+        print("✅ Структура бази даних перевірена та оновлена")
     
     # ========== МЕТОДИ ДЛЯ РОБОТИ З КОРИСТУВАЧАМИ ==========
     

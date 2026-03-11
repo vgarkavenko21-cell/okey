@@ -55,6 +55,10 @@ async def handle_delete_menu_buttons(update: Update, context: ContextTypes.DEFAU
 async def handle_delete_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Універсальний обробник текстових повідомлень для видалення"""
     
+    # Якщо активний спільний альбом - пропускаємо
+    if context.user_data.get('shared_album_active'):
+        return False
+    
     print(f"🔍 handle_delete_text: text='{update.message.text}'")
     print(f"📊 in_delete_menu={context.user_data.get('in_delete_menu')}, delete_action={context.user_data.get('delete_action')}")
     
@@ -71,7 +75,6 @@ async def handle_delete_text(update: Update, context: ContextTypes.DEFAULT_TYPE)
     action = context.user_data.get('delete_action')
     print(f"✅ Обробляємо дію: {action} з текстом: {update.message.text}")
     
-    # Обробляємо відповідно до дії
     if action == 'recent':
         return await delete_handle_recent_input(update, context)
     elif action == 'first':

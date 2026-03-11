@@ -2,37 +2,33 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKe
 from telegram.ext import ContextTypes
 from db_models import Database
 import helpers
+from telegram import ReplyKeyboardRemove
 
 db = Database()
 
 # ========== ГОЛОВНЕ МЕНЮ СПІЛЬНИХ АЛЬБОМІВ ==========
 
 async def shared_albums_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Головне меню спільних альбомів"""
+    """Головне меню спільних альбомів — ТІЛЬКИ СПІЛЬНІ"""
     user_id = update.effective_user.id
     
-    # Отримуємо спільні альбоми, де користувач є учасником
+    # Отримуємо ТІЛЬКИ ті альбоми, які позначені як спільні (is_shared = 1)
     shared_albums = db.cursor.execute("""
         SELECT a.*, sa.access_level, u.username as owner_name 
         FROM albums a 
         JOIN shared_albums sa ON a.album_id = sa.album_id 
         JOIN users u ON a.user_id = u.user_id
-        WHERE sa.user_id = ? AND a.is_archived = 0
+        WHERE sa.user_id = ? 
+        AND a.is_shared = 1  -- ФІЛЬТР: Тільки спільні
+        AND a.is_archived = 0
         ORDER BY a.created_at DESC
-    """, (user_id,)).fetchall()
-    
-    # Отримуємо альбоми, де користувач є власником (але ще не спільні)
-    owned_albums = db.cursor.execute("""
-        SELECT * FROM albums 
-        WHERE user_id = ? AND is_shared = 0 AND is_archived = 0
-        ORDER BY created_at DESC
     """, (user_id,)).fetchall()
     
     text = "👥 **Спільні альбоми**\n\n"
     keyboard = []
     
     if shared_albums:
-        text += "**Альбоми, де ви учасник:**\n"
+        text += "Альбоми, де ви учасник:\n"
         for album in shared_albums:
             role_emoji = {
                 'owner': '👑', 'admin': '⚙️', 'editor': '✏️', 
@@ -44,27 +40,17 @@ async def shared_albums_main(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 album_text, 
                 callback_data=f"shared_open_{album['album_id']}"
             )])
-        text += "\n"
+    else:
+        text += "У вас немає спільних альбомів.\n"
     
-    if owned_albums:
-        text += "**Ваші альбоми (можна зробити спільними):**\n"
-        for album in owned_albums:
-            keyboard.append([InlineKeyboardButton(
-                f"📁 {album['name']} ({album['files_count']} файлів)", 
-                callback_data=f"make_shared_{album['album_id']}"
-            )])
-    
-    if not shared_albums and not owned_albums:
-        text = "👥 У вас немає спільних альбомів.\n\n"
-    
-    keyboard.append([InlineKeyboardButton("➕ Створити спільний альбом", callback_data="shared_create")])
+    keyboard.append([InlineKeyboardButton("➕ Створити новий спільний", callback_data="shared_create")])
     keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="back_to_main")])
     
-    await update.message.reply_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='Markdown'
-    )
+    # Видаляємо старі повідомлення для чистоти інтерфейсу
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    else:
+        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
 # ========== СТВОРЕННЯ СПІЛЬНОГО АЛЬБОМУ ==========
 
@@ -92,6 +78,7 @@ async def shared_handle_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("❌ Назва має бути від 2 до 50 символів")
         return True
     
+    # Створюємо альбом
     album_id = db.create_album(user_id, album_name)
     
     db.cursor.execute(
@@ -106,14 +93,22 @@ async def shared_handle_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     db.conn.commit()
     
+    # Очищаємо стани
     context.user_data['shared_awaiting_name'] = False
     context.user_data['shared_creating'] = False
+    
+    # ВАЖЛИВО: Спочатку очищаємо звичайний альбом
+    context.user_data['album_keyboard_active'] = False
+    context.user_data.pop('current_album', None)
+    
+    # Встановлюємо активний спільний альбом
     context.user_data['current_shared_album'] = album_id
     context.user_data['shared_album_active'] = True
     context.user_data['shared_access_level'] = 'owner'
     
     album = db.get_album(album_id)
     
+    # Клавіатура для спільного альбому
     album_keyboard = ReplyKeyboardMarkup([
         [KeyboardButton("📤 Надіслати весь альбом")],
         [KeyboardButton("⏳ Надіслати останні"), KeyboardButton("⏮ Надіслати перші")],
@@ -122,16 +117,26 @@ async def shared_handle_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
         [KeyboardButton("◀️ Вийти з альбому")]
     ], resize_keyboard=True)
     
+    # Відправляємо повідомлення
     await update.message.reply_text(
         f"✅ Спільний альбом '{album_name}' створено!\n\n"
-        f"📁 **{album_name}**\n"
+        f"👥 **{album_name}**\n"
         f"└ Файлів: 0\n"
         f"└ Ваша роль: Власник 👑\n\n"
         f"Надсилайте файли в цей чат, вони автоматично збережуться в альбом.",
         reply_markup=album_keyboard,
         parse_mode='Markdown'
     )
+    
+    # Лог для перевірки
+    print(f"✅ Спільний альбом створено, active={context.user_data.get('shared_album_active')}")
+
+    # ВАЖЛИВО: Очищаємо стан звичайного альбому, якщо він був активний
+    context.user_data['album_keyboard_active'] = False
+    context.user_data.pop('current_album', None)
+    
     return True
+
 
 # ========== ВІДКРИТТЯ СПІЛЬНОГО АЛЬБОМУ ==========
 
@@ -862,7 +867,7 @@ async def shared_handle_delete_confirmation(update: Update, context: ContextType
 # ========== ВИХІД З АЛЬБОМУ ==========
 
 async def shared_exit_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Вихід зі спільного альбому"""
+    """Вихід зі спільного альбому до меню спільних альбомів"""
     if update.message.text == "◀️ Вийти з альбому" and context.user_data.get('shared_album_active'):
         context.user_data['shared_album_active'] = False
         context.user_data.pop('current_shared_album', None)
@@ -874,10 +879,14 @@ async def shared_exit_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop('shared_changing_role_for', None)
         context.user_data.pop('shared_removing_member', None)
         
+        # Видаляємо реплай клавіатуру
         await update.message.reply_text(
-            "Ви вийшли зі спільного альбому",
-            reply_markup=MAIN_MENU
+            "◀️ Повернення до списку спільних альбомів",
+            reply_markup=ReplyKeyboardRemove()
         )
+        
+        # Викликаємо меню спільних альбомів
+        await shared_albums_main(update, context)
         return True
     return False
 
@@ -885,12 +894,14 @@ async def shared_exit_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def shared_handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обробник отримання файлів для спільного альбому"""
-    if not context.user_data.get('shared_album_active'):
+    ud = context.user_data
+    if not ud.get('shared_album_active'):
         return False
     
-    album_id = context.user_data.get('current_shared_album')
+    album_id = ud.get('current_shared_album')
     user_id = update.effective_user.id
     
+    # Перевірка прав
     access = db.cursor.execute(
         "SELECT access_level FROM shared_albums WHERE album_id = ? AND user_id = ?",
         (album_id, user_id)
@@ -900,39 +911,306 @@ async def shared_handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("❌ У вас немає прав на додавання файлів.")
         return True
     
-    file_id = None
-    file_type = None
-    file_name = None
-    file_size = None
+    file_id, file_type, file_name, file_size = None, None, None, None
     
+    # Визначаємо тип файлу (додано кружечки та голос)
     if update.message.photo:
-        file_id = update.message.photo[-1].file_id
-        file_type = 'photo'
-        file_size = update.message.photo[-1].file_size
+        file_id, file_type, file_size = update.message.photo[-1].file_id, 'photo', update.message.photo[-1].file_size
     elif update.message.video:
-        file_id = update.message.video.file_id
-        file_type = 'video'
-        file_name = update.message.video.file_name
-        file_size = update.message.video.file_size
+        file_id, file_type, file_name, file_size = update.message.video.file_id, 'video', update.message.video.file_name, update.message.video.file_size
     elif update.message.document:
-        file_id = update.message.document.file_id
-        file_type = 'document'
-        file_name = update.message.document.file_name
-        file_size = update.message.document.file_size
+        file_id, file_type, file_name, file_size = update.message.document.file_id, 'document', update.message.document.file_name, update.message.document.file_size
+    elif update.message.video_note:
+        file_id, file_type, file_size = update.message.video_note.file_id, 'circle', update.message.video_note.file_size
     else:
-        return False
+        return False # Пропускаємо текст
     
+    # Зберігаємо в базу
     db.add_file(album_id, file_id, file_type, file_name, file_size, user_id)
     
-    settings = helpers.get_user_display_settings(db, user_id)
+    # ГРУПУВАННЯ ПІДТВЕРДЖЕНЬ (щоб не спамити при завантаженні альбому)
+    media_group_id = update.message.media_group_id
+    if media_group_id:
+        key = f"shared_notified_{media_group_id}"
+        if not ud.get(key):
+            ud[key] = True
+            await update.message.reply_text("✅ Групу файлів збережено в спільний альбом!")
+            # Очищуємо кеш групи через 10 сек
+            async def clear(): 
+                await asyncio.sleep(10)
+                ud.pop(key, None)
+            asyncio.create_task(clear())
+    else:
+        await update.message.reply_text(f"✅ {helpers.get_file_emoji(file_type)} Збережено!")
     
-    confirm = "✅ Файл збережено!"
-    if settings.get('show_number'):
-        total = db.cursor.execute(
-            "SELECT COUNT(*) FROM files WHERE album_id = ?",
-            (album_id,)
-        ).fetchone()[0]
-        confirm += f" (файл #{total})"
-    
-    await update.message.reply_text(confirm)
     return True
+
+
+# ========== ОБРОБНИКИ ОСНОВНИХ КНОПОК СПІЛЬНОГО АЛЬБОМУ ==========
+
+async def shared_send_all(update: Update, context: ContextTypes.DEFAULT_TYPE, album_id):
+    """Надіслати всі файли зі спільного альбому"""
+    if not context.user_data.get('shared_album_active'):
+        return False
+    
+    files = db.get_album_files(album_id)
+    album = db.get_album(album_id)
+    
+    if not files:
+        await update.message.reply_text("📭 В альбомі немає файлів.")
+        return True
+    
+    await update.message.reply_text(f"📤 Надсилаю всі {len(files)} файлів з альбому '{album['name']}'...")
+    
+    for file in files:
+        await send_file_by_type_shared(update, context, file)
+    
+    await update.message.reply_text("✅ Готово!")
+    return True
+
+async def shared_send_recent_start(update: Update, context: ContextTypes.DEFAULT_TYPE, album_id):
+    """Початок надсилання останніх файлів"""
+    context.user_data['shared_send_recent_album'] = album_id
+    context.user_data['shared_awaiting_recent_count'] = True
+    
+    await update.message.reply_text(
+        "⏳ Скільки останніх файлів надіслати?\n"
+        "Введіть число (наприклад: 5, 10, 20):"
+    )
+    return True
+
+async def shared_handle_recent_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обробник введення кількості останніх файлів"""
+    if not context.user_data.get('shared_awaiting_recent_count'):
+        return False
+    
+    try:
+        count = int(update.message.text)
+        if count <= 0 or count > 50:
+            await update.message.reply_text("❌ Введіть число від 1 до 50:")
+            return True
+        
+        album_id = context.user_data.get('shared_send_recent_album')
+        if not album_id:
+            return False
+        
+        files = db.get_album_files(album_id)
+        album = db.get_album(album_id)
+        
+        if not files:
+            await update.message.reply_text("📭 В альбомі немає файлів.")
+        else:
+            selected = files[-count:]
+            await update.message.reply_text(f"📤 Надсилаю {len(selected)} останніх файлів...")
+            
+            for file in selected:
+                await send_file_by_type_shared(update, context, file)
+        
+        context.user_data['shared_awaiting_recent_count'] = False
+        context.user_data.pop('shared_send_recent_album', None)
+        return True
+        
+    except ValueError:
+        await update.message.reply_text("❌ Введіть число.")
+        return True
+
+async def shared_send_first_start(update: Update, context: ContextTypes.DEFAULT_TYPE, album_id):
+    """Початок надсилання перших файлів"""
+    context.user_data['shared_send_first_album'] = album_id
+    context.user_data['shared_awaiting_first_count'] = True
+    
+    await update.message.reply_text(
+        "⏮ Скільки перших файлів надіслати?\n"
+        "Введіть число (наприклад: 5, 10, 20):"
+    )
+    return True
+
+async def shared_handle_first_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обробник введення кількості перших файлів"""
+    if not context.user_data.get('shared_awaiting_first_count'):
+        return False
+    
+    try:
+        count = int(update.message.text)
+        if count <= 0 or count > 50:
+            await update.message.reply_text("❌ Введіть число від 1 до 50:")
+            return True
+        
+        album_id = context.user_data.get('shared_send_first_album')
+        if not album_id:
+            return False
+        
+        files = db.get_album_files(album_id)
+        album = db.get_album(album_id)
+        
+        if not files:
+            await update.message.reply_text("📭 В альбомі немає файлів.")
+        else:
+            selected = files[:count]
+            await update.message.reply_text(f"📤 Надсилаю перші {len(selected)} файлів...")
+            
+            for file in selected:
+                await send_file_by_type_shared(update, context, file)
+        
+        context.user_data['shared_awaiting_first_count'] = False
+        context.user_data.pop('shared_send_first_album', None)
+        return True
+        
+    except ValueError:
+        await update.message.reply_text("❌ Введіть число.")
+        return True
+
+async def shared_send_range_start(update: Update, context: ContextTypes.DEFAULT_TYPE, album_id):
+    """Початок надсилання проміжку"""
+    context.user_data['shared_send_range_album'] = album_id
+    context.user_data['shared_awaiting_range'] = True
+    
+    await update.message.reply_text(
+        "🔢 Введіть проміжок у форматі X-Y (наприклад: 5-10):"
+    )
+    return True
+
+async def shared_handle_range_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обробник введення проміжку"""
+    if not context.user_data.get('shared_awaiting_range'):
+        return False
+    
+    text = update.message.text.strip()
+    if '-' not in text:
+        await update.message.reply_text("❌ Використовуйте формат X-Y")
+        return True
+    
+    try:
+        start, end = map(int, text.split('-'))
+        if start <= 0 or start > end:
+            await update.message.reply_text("❌ Невірний проміжок")
+            return True
+        
+        album_id = context.user_data.get('shared_send_range_album')
+        files = db.get_album_files(album_id)
+        total = len(files)
+        
+        if start > total:
+            await update.message.reply_text(f"❌ Початкове число більше {total}")
+            return True
+        
+        if end > total:
+            end = total
+        
+        selected = files[start-1:end]
+        album = db.get_album(album_id)
+        
+        await update.message.reply_text(f"📤 Надсилаю файли з {start} по {end}...")
+        
+        for file in selected:
+            await send_file_by_type_shared(update, context, file)
+        
+        context.user_data['shared_awaiting_range'] = False
+        context.user_data.pop('shared_send_range_album', None)
+        return True
+        
+    except ValueError:
+        await update.message.reply_text("❌ Невірний формат")
+        return True
+
+async def shared_send_by_date_start(update: Update, context: ContextTypes.DEFAULT_TYPE, album_id):
+    """Початок надсилання за датою"""
+    context.user_data['shared_send_date_album'] = album_id
+    context.user_data['shared_awaiting_date'] = True
+    
+    await update.message.reply_text(
+        "📅 Введіть дату (РРРР-ММ-ДД):"
+    )
+    return True
+
+async def shared_handle_date_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обробник введення дати"""
+    if not context.user_data.get('shared_awaiting_date'):
+        return False
+    
+    date_str = update.message.text
+    album_id = context.user_data.get('shared_send_date_album')
+    
+    try:
+        from datetime import datetime
+        datetime.strptime(date_str, '%Y-%m-%d')
+        
+        files = db.get_files_by_date(album_id, date_str)
+        
+        if not files:
+            await update.message.reply_text(f"📭 Немає файлів за {date_str}")
+        else:
+            await update.message.reply_text(f"📤 Надсилаю {len(files)} файлів...")
+            
+            for file in files:
+                await send_file_by_type_shared(update, context, file)
+        
+        context.user_data['shared_awaiting_date'] = False
+        context.user_data.pop('shared_send_date_album', None)
+        return True
+        
+    except ValueError:
+        await update.message.reply_text("❌ Невірний формат дати")
+        return True
+
+async def send_file_by_type_shared(update: Update, context: ContextTypes.DEFAULT_TYPE, file_data):
+    """Надсилання файлу за типом"""
+    file_id = file_data['telegram_file_id']
+    file_type = file_data['file_type']
+    
+    try:
+        if file_type == 'photo':
+            await update.message.reply_photo(photo=file_id)
+        elif file_type == 'video':
+            await update.message.reply_video(video=file_id)
+        elif file_type == 'document':
+            await update.message.reply_document(document=file_id)
+        elif file_type == 'audio':
+            await update.message.reply_audio(audio=file_id)
+        elif file_type == 'voice':
+            await update.message.reply_voice(voice=file_id)
+        elif file_type == 'circle':
+            await update.message.reply_video_note(video_note=file_id)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Помилка: {e}")
+
+async def shared_handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обробник основних кнопок спільного альбому"""
+    
+    print(f"🔵 shared_handle_main_buttons: text='{update.message.text}'")
+    
+    # Якщо зараз очікується будь-який текстовий ввід — пропускаємо
+    if (context.user_data.get("shared_awaiting_name") or
+        context.user_data.get("shared_awaiting_member") or
+        context.user_data.get("shared_awaiting_role") or
+        context.user_data.get("shared_awaiting_remove") or
+        context.user_data.get("shared_awaiting_remove_confirm") or
+        context.user_data.get("shared_awaiting_recent_count") or
+        context.user_data.get("shared_awaiting_first_count") or
+        context.user_data.get("shared_awaiting_range") or
+        context.user_data.get("shared_awaiting_date")):
+        return False
+    
+    # Якщо не відкритий спільний альбом — теж пропускаємо
+    if not context.user_data.get("shared_album_active"):
+        return False
+    
+    text = update.message.text
+    album_id = context.user_data.get("current_shared_album")
+    
+    if "Надіслати весь альбом" in text:
+        return await shared_send_all(update, context, album_id)
+    elif "Надіслати останні" in text:
+        return await shared_send_recent_start(update, context, album_id)
+    elif "Надіслати перші" in text:
+        return await shared_send_first_start(update, context, album_id)
+    elif "Надіслати проміжок" in text:
+        return await shared_send_range_start(update, context, album_id)
+    elif "Надіслати за датою" in text:
+        return await shared_send_by_date_start(update, context, album_id)
+    elif "Додаткові опції" in text:
+        return False  # Пропускаємо для shared_additional_menu
+    elif "Вийти з альбому" in text:
+        return await shared_exit_album(update, context)
+    
+    return False

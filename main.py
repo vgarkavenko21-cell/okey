@@ -39,6 +39,27 @@ from album_manage import (
     confirm_archive, delete_album_start,
     handle_delete_confirmation
 )
+# Імпорти функцій спільного альбому для головного файлу (main.py)
+# Імпорти для роботи зі спільними альбомами в main.py
+from shared_albums import (
+    shared_albums_main,               # Меню списку спільних альбомів
+    shared_create_start,              # Початок створення альбому
+    shared_handle_name,               # Обробник введення назви
+    shared_open_album,                # Логіка відкриття альбому
+    shared_additional_menu,           # Додаткові опції альбому
+    shared_handle_member_input,       # Введення юзернейма учасника
+    shared_manage_roles,              # Керування ролями
+    shared_set_role,                  # Зміна ролі (callback)
+    shared_show_role_options,         # Меню вибору ролей
+    shared_handle_members_navigation, # Навігація в меню учасників
+    shared_handle_remove_selection,   # Вибір учасника для видалення
+    shared_handle_remove_confirmation,# Підтвердження видалення учасника
+    shared_handle_archive,            # Архівація альбому
+    shared_handle_delete_confirmation,# Видалення всього альбому
+    shared_exit_album,                # Вихід з режиму спільного альбому
+    shared_handle_file,               # Збереження файлів у спільний альбом
+    shared_handle_role_text_input     # Пошук учасника за текстом
+)
 
 
 # Налаштування логування
@@ -168,26 +189,37 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ========== ОБРОБНИК ТЕКСТОВИХ ПОВІДОМЛЕНЬ (ГОЛОВНЕ МЕНЮ) ==========
 
 async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обробник навігації по головному меню"""
-    
-    # ВАЖЛИВО: Якщо активний режим альбому - ігноруємо головне меню
-    if context.user_data.get('album_keyboard_active'):
-        return  # Просто виходимо, нічого не робимо
-    
+    """Обробник навігації по головному меню з розумним скиданням станів"""
     text = update.message.text
     user_id = update.effective_user.id
-    
-    # Перевіряємо чи користувач не заблокований
+    ud = context.user_data
+
+    # Список кнопок головного меню
+    main_menu_buttons = ["📷 Мої альбоми", "👥 Спільні альбоми", "📝 Мої нотатки", "🤝 Спільні нотатки", "⚙️ Налаштування"]
+
+    # ЯКЩО НАТИСНУТО КНОПКУ МЕНЮ — примусово виходимо з усіх режимів альбомів
+    if text in main_menu_buttons:
+        ud['shared_album_active'] = False
+        ud['album_keyboard_active'] = False
+        ud.pop('current_shared_album', None)
+        ud.pop('current_album', None)
+        ud.pop('shared_in_additional', None)
+        ud.pop('shared_in_members_main', None)
+    else:
+        # Тільки якщо це НЕ кнопка меню і активний альбом — ігноруємо (щоб не плутати з підписом до фото)
+        if ud.get('shared_album_active') or ud.get('album_keyboard_active'):
+            return
+
+    # --- Далі твоя звичайна логіка перевірки блокування та навігації ---
     user = db.get_user(user_id)
     if user and user['is_blocked']:
         await update.message.reply_text("⛔ Ваш обліковий запис заблоковано.")
         return
     
     if text == "📷 Мої альбоми":
-        await show_my_albums(update, context)
-    
+        await show_my_albums(update, context) # Тут ми зараз поправимо SQL
     elif text == "👥 Спільні альбоми":
-        await show_shared_albums(update, context)
+        await shared_albums_main(update, context)
     
     elif text == "📝 Мої нотатки":
         await show_my_notes(update, context)
@@ -1110,8 +1142,29 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from shared_albums import shared_add_member_start
         await shared_add_member_start(update, context)
     
-    # ... решта коду
-
+    elif data == "shared_back_to_members_main":
+        # Повернення до головного меню учасників
+        album_id = context.user_data.get('current_shared_album')
+        access_level = context.user_data.get('shared_access_level')
+        from shared_albums import shared_members_main
+        # Створюємо фейковий update для виклику
+        fake_update = update
+        fake_update.message = query.message
+        await shared_members_main(fake_update, context, album_id, access_level)
+    
+    elif data == "shared_back_to_role_selection":
+        # Повернення до вибору ролі
+        album_id = context.user_data.get('current_shared_album')
+        from shared_albums import shared_manage_roles
+        fake_update = update
+        fake_update.message = query.message
+        await shared_manage_roles(fake_update, context, album_id)
+    
+    elif data.startswith("shared_role_"):
+        # Вибір учасника для зміни ролі
+        target_user_id = int(data.split('_')[2])
+        from shared_albums import shared_show_role_options
+        await shared_show_role_options(update, context, target_user_id)
 
 
     
@@ -1386,9 +1439,34 @@ async def handle_all_text_inputs(update: Update, context: ContextTypes.DEFAULT_T
         
     elif context.user_data.get('awaiting_date'):
         return await handle_date_input(update, context)
+    
+    elif context.user_data.get('shared_awaiting_name'):
+        # ВИПРАВЛЕНО: Викликаємо обробник назви спільного альбому
+        from shared_albums import shared_handle_name
+        return await shared_handle_name(update, context)
 
     return False
-# ========== ГОЛОВНА ФУНКЦІЯ ==========
+
+
+
+
+async def handle_all_files_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Єдиний вхід для всіх медіа: фото, відео, файли, кружечки"""
+    ud = context.user_data
+    
+    # 1. Якщо ми всередині спільного альбому
+    if ud.get('shared_album_active'):
+        from shared_albums import shared_handle_file
+        return await shared_handle_file(update, context)
+    
+    # 2. Якщо ми всередині особистого альбому
+    if ud.get('current_album') or ud.get('album_keyboard_active'):
+        return await handle_file(update, context)
+    
+    # 3. Якщо нічого не відкрито
+    await update.message.reply_text("⚠️ Спочатку відкрийте альбом, щоб зберегти файл.")
+
+## ========== ГОЛОВНА ФУНКЦІЯ ==========
 
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
@@ -1403,35 +1481,217 @@ def main():
         handle_delete_text
     ), group=1)
     
-    # 2. Звичайні текстові вводи (цифри, дати, назви) - ЄДИНИЙ РОУТЕР
+    # 2. Звичайні текстові вводи (цифри, дати, назви)
     application.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND, 
         handle_all_text_inputs
     ), group=2)
+    
+        # ===== ГРУПА 3: ОБРОБНИКИ СПІЛЬНИХ АЛЬБОМІВ =====
+    from shared_albums import (
+        shared_handle_name,
+        shared_handle_member_input,
+        shared_handle_role_text_input,
+        shared_handle_remove_selection,
+        shared_handle_remove_confirmation,
+        shared_handle_members_navigation,
+        shared_handle_archive,
+        shared_handle_delete_confirmation,
+        shared_additional_menu,
+        shared_handle_main_buttons,  # ЦЕЙ МАЄ БУТИ ПЕРШИМ!
+        shared_handle_recent_count,
+        shared_handle_first_count,
+        shared_handle_range_input,
+        shared_handle_date_input
+    )
+    
+    # Спочатку основні кнопки
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        shared_handle_main_buttons
+    ), group=3)
+    
+    # Потім інші обробники
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        shared_handle_name
+    ), group=3)
+    
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        shared_handle_member_input
+    ), group=3)
+    
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        shared_handle_role_text_input
+    ), group=3)
+    
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        shared_handle_remove_selection
+    ), group=3)
+    
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        shared_handle_remove_confirmation
+    ), group=3)
+    
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        shared_handle_members_navigation
+    ), group=3)
+    
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        shared_handle_archive
+    ), group=3)
+    
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        shared_handle_delete_confirmation
+    ), group=3)
+    
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        shared_additional_menu
+    ), group=3)
+    
+    # Обробники для чисел та дат
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        shared_handle_recent_count
+    ), group=3)
+    
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        shared_handle_first_count
+    ), group=3)
+    
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        shared_handle_range_input
+    ), group=3)
+    
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        shared_handle_date_input
+    ), group=3)
+    
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        shared_handle_main_buttons
+    ), group=3)
+    
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        shared_handle_recent_count
+    ), group=3)
+    
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        shared_handle_first_count
+    ), group=3)
+    
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        shared_handle_range_input
+    ), group=3)
+    
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        shared_handle_date_input
+    ), group=3)
 
+    # Обробник для введення username учасника
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND, 
+        shared_handle_member_input
+    ), group=3)
     
+    # Обробник для текстового введення ролі
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND, 
+        shared_handle_role_text_input
+    ), group=3)
     
-    # 3. Кнопки альбому
+    # Обробник для вибору учасника на видалення
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND, 
+        shared_handle_remove_selection
+    ), group=3)
+    
+    # Обробник для підтвердження видалення учасника
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND, 
+        shared_handle_remove_confirmation
+    ), group=3)
+    
+    # Обробник для навігації по меню учасників
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND, 
+        shared_handle_members_navigation
+    ), group=3)
+    
+    # Обробник для архівації
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND, 
+        shared_handle_archive
+    ), group=3)
+    
+    # Обробник для підтвердження видалення альбому
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND, 
+        shared_handle_delete_confirmation
+    ), group=3)
+    
+    # Обробник для додаткового меню
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND, 
+        shared_additional_menu
+    ), group=3)
+    
+    # 4. Кнопки альбому
     application.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND, 
         handle_album_buttons
-    ), group=3)
+    ), group=4)
     
-    # 4. Головне меню
+    # 5. Головне меню
     application.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND, 
         handle_menu
-    ), group=4)
+    ), group=5)
     
-    # Обробник файлів (фото, відео, документи тощо)
+    # ===== УНІВЕРСАЛЬНИЙ ОБРОБНИК ВСІХ ФАЙЛІВ =====
+    application.add_handler(MessageHandler(
+        filters.PHOTO | filters.VIDEO | filters.Document.ALL | filters.AUDIO | filters.VOICE | filters.VIDEO_NOTE,
+        handle_all_files_dispatcher
+    ), group=0)
+
+    # Обробник файлів для звичайних альбомів
     application.add_handler(MessageHandler(
         filters.PHOTO | filters.VIDEO | filters.Document.ALL | filters.AUDIO | filters.VOICE | filters.VIDEO_NOTE,
         handle_file
+    ))
+
+    # Обробник файлів для спільних альбомів
+    from shared_albums import shared_handle_file
+    application.add_handler(MessageHandler(
+        filters.PHOTO | filters.VIDEO | filters.Document.ALL,
+        shared_handle_file
     ))
     
     application.add_handler(CallbackQueryHandler(callback_handler))
     
     print("🚀 Бот запускається...")
+    print("📋 Групи обробників:")
+    print("  group=1: Видалення файлів")
+    print("  group=2: Звичайні текстові вводи")
+    print("  group=3: Спільні альбоми")
+    print("  group=4: Кнопки альбомів")
+    print("  group=5: Головне меню")
+    
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
