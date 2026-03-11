@@ -860,12 +860,9 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_shared_albums(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показати список спільних альбомів"""
-    # Тимчасово заглушка
-    await update.message.reply_text(
-        "👥 Розділ спільних альбомів в розробці.\n\n"
-        "Незабаром тут з'явиться функціонал для спільного доступу!",
-        reply_markup=MAIN_MENU
-    )
+    # Просто викликаємо функцію з shared_albums.py
+    from shared_albums import shared_albums_main
+    await shared_albums_main(update, context)
 
 # ========== НОТАТКИ ==========
 
@@ -1086,6 +1083,37 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     elif data == "back_to_settings":
         await show_settings(update, context)
+
+
+    # ===== СПІЛЬНІ АЛЬБОМИ =====
+    elif data == "shared_create":
+        from shared_albums import shared_create_start
+        await shared_create_start(update, context)
+    
+    elif data.startswith("shared_open_"):
+        from shared_albums import shared_open_album
+        await shared_open_album(update, context)
+    
+    elif data == "shared_manage_members":
+        from shared_albums import shared_manage_members
+        await shared_manage_members(update, context)
+    
+    elif data.startswith("shared_edit_role_"):
+        from shared_albums import shared_edit_role
+        await shared_edit_role(update, context)
+    
+    elif data.startswith("shared_set_role_"):
+        from shared_albums import shared_set_role
+        await shared_set_role(update, context)
+    
+    elif data == "shared_add_member":
+        from shared_albums import shared_add_member_start
+        await shared_add_member_start(update, context)
+    
+    # ... решта коду
+
+
+
     
     # ===== ДОДАТКОВІ ДІЇ =====
     elif data.startswith("album_info_"):
@@ -1380,6 +1408,8 @@ def main():
         filters.TEXT & ~filters.COMMAND, 
         handle_all_text_inputs
     ), group=2)
+
+    
     
     # 3. Кнопки альбому
     application.add_handler(MessageHandler(

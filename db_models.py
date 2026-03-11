@@ -67,19 +67,20 @@ class Database:
             )
         ''')
         
-        # Таблиця спільних альбомів (учасники)
+        # Таблиця спільних альбомів (ВИПРАВЛЕНО: додана кома)
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS shared_albums (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 album_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
-                access_level TEXT CHECK(access_level IN ('view', 'add', 'full')) DEFAULT 'view',
+                access_level TEXT CHECK(access_level IN ('owner', 'admin', 'editor', 'contributor', 'viewer')),
                 added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (album_id) REFERENCES albums (album_id) ON DELETE CASCADE,
                 FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE,
                 UNIQUE(album_id, user_id)
             )
         ''')
+
         
         # Таблиця нотаток
         self.cursor.execute('''
@@ -120,6 +121,24 @@ class Database:
                 expires_at TIMESTAMP,
                 is_active BOOLEAN DEFAULT 1,
                 FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
+            )
+        ''')
+
+    
+
+            # Таблиця користувачів (додайте поле)
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                last_name TEXT,
+                registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                is_premium BOOLEAN DEFAULT 0,
+                premium_until TIMESTAMP,
+                rivacy_settings TEXT DEFAULT '{"allow_invites": "all", "allow_add_to_shared": true, "allow_add_to_shared_notes": true}',
+                display_settings TEXT DEFAULT '{"show_number": true, "show_date": true}',
+                is_blocked BOOLEAN DEFAULT 0
             )
         ''')
         
@@ -212,6 +231,57 @@ class Database:
         INSERT INTO archive_log (album_id, user_id, action)
         VALUES (?, ?, 'unarchive')
         ''', (album_id, user_id))
+        self.conn.commit()
+
+
+# === МЕТОДИ ДЛЯ СПІЛЬНИХ АЛЬБОМІВ ===
+
+    def get_shared_albums_for_user(self, user_id):
+        """Отримати всі альбоми, до яких користувач має доступ (крім власних)"""
+        return self.cursor.execute('''
+            SELECT a.*, sa.role FROM albums a
+            JOIN shared_albums sa ON a.album_id = sa.album_id
+            WHERE sa.user_id = ? AND a.user_id != ?
+        ''', (user_id, user_id)).fetchall()
+
+    def create_shared_album(self, user_id, name):
+        """Створення спільного альбому (власник додається автоматично)"""
+        album_id = self.create_album(user_id, name)
+        self.cursor.execute("UPDATE albums SET is_shared = 1 WHERE album_id = ?", (album_id,))
+        self.cursor.execute('''
+            INSERT INTO shared_albums (album_id, user_id, role)
+            VALUES (?, ?, 'owner')
+        ''', (album_id, user_id))
+        self.conn.commit()
+        return album_id
+
+    def get_user_role(self, user_id, album_id):
+        """Отримати роль користувача в альбомі"""
+        result = self.cursor.execute(
+            "SELECT role FROM shared_albums WHERE user_id = ? AND album_id = ?",
+            (user_id, album_id)
+        ).fetchone()
+        return result['role'] if result else None
+
+    def get_album_members(self, album_id):
+        """Список учасників з іменами"""
+        return self.cursor.execute('''
+            SELECT u.user_id, u.username, u.first_name, sa.role, sa.added_at 
+            FROM shared_albums sa
+            JOIN users u ON sa.user_id = u.user_id
+            WHERE sa.album_id = ?
+        ''', (album_id,)).fetchall()
+
+    def add_member(self, album_id, user_id, role='author'):
+        self.cursor.execute('''
+            INSERT OR REPLACE INTO shared_albums (album_id, user_id, role)
+            VALUES (?, ?, ?)
+        ''', (album_id, user_id, role))
+        self.conn.commit()
+
+    def update_role(self, album_id, user_id, new_role):
+        self.cursor.execute("UPDATE shared_albums SET role = ? WHERE album_id = ? AND user_id = ?", 
+                           (new_role, album_id, user_id))
         self.conn.commit()
 
 

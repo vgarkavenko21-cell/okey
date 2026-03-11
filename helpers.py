@@ -87,3 +87,47 @@ def get_user_display_settings(db, user_id):
         settings['show_date'] = True
         
     return settings
+
+def get_role_name(role):
+    """Отримати назву ролі"""
+    roles = {
+        'owner': 'Власник',
+        'admin': 'Адміністратор',
+        'editor': 'Редактор',
+        'contributor': 'Автор',
+        'viewer': 'Спостерігач'
+    }
+    return roles.get(role, role)
+
+def get_role_name(access_level):
+    """Переклад технічної ролі на зрозумілу мову"""
+    roles = {
+        'owner': 'Власник',
+        'admin': 'Адмін',
+        'editor': 'Редактор',
+        'contributor': 'Автор',
+        'viewer': 'Спостерігач'
+    }
+    return roles.get(access_level, 'Учасник')
+
+def get_user_display_settings(db, user_id):
+    """Отримати налаштування відображення користувача"""
+    result = db.cursor.execute(
+        "SELECT display_settings FROM users WHERE user_id = ?",
+        (user_id,)
+    ).fetchone()
+    
+    if result and result['display_settings']:
+        import json
+        return json.loads(result['display_settings'])
+    
+    return {'show_number': True, 'show_date': True}
+
+def save_user_display_settings(db, user_id, settings):
+    """Зберегти налаштування відображення користувача"""
+    import json
+    db.cursor.execute(
+        "UPDATE users SET display_settings = ? WHERE user_id = ?",
+        (json.dumps(settings), user_id)
+    )
+    db.conn.commit()
