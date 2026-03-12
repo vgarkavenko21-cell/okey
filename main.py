@@ -549,33 +549,54 @@ async def handle_album_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
         
         album = db.get_album(album_id)
         await update.message.reply_text(f"📤 Надсилаю всі {len(files)} файлів з альбому '{album['name']}'...")
+        
         for idx, file in enumerate(files, 1):
             await send_file_by_type(update, context, file, index=idx)
+        
         await update.message.reply_text("✅ Готово!")
         return True
     
+
     elif text == "⏳ Надіслати останні":
         context.user_data['send_recent_album'] = album_id
         context.user_data['awaiting_recent_count'] = True
-        await update.message.reply_text("⏳ Скільки останніх файлів надіслати?\nВведіть число (наприклад: 5, 10, 20):")
+        
+        await update.message.reply_text(
+            "⏳ Скільки останніх файлів надіслати?\n"
+            "Введіть число (наприклад: 5, 10, 20):"
+        )
         return True
-    
+
     elif text == "📅 Надіслати за датою":
         context.user_data['send_date_album'] = album_id
         context.user_data['awaiting_date'] = True
-        await update.message.reply_text("📅 Введіть дату у форматі РРРР-ММ-ДД\nНаприклад: 2024-01-31")
+        
+        await update.message.reply_text(
+            "📅 Введіть дату у форматі РРРР-ММ-ДД\n"
+            "Наприклад: 2024-01-31"
+        )
         return True
     
+
     elif text == "⏮ Надіслати перші":
         context.user_data['send_first_album'] = album_id
         context.user_data['awaiting_first_count'] = True
-        await update.message.reply_text("⏮ Скільки перших файлів надіслати?\nВведіть число (наприклад: 5, 10, 20):")
+        
+        await update.message.reply_text(
+            "⏮ Скільки перших файлів надіслати?\n"
+            "Введіть число (наприклад: 5, 10, 20):"
+        )
         return True
         
+
     elif text == "🔢 Надіслати проміжок":
         context.user_data['send_range_album'] = album_id
         context.user_data['awaiting_range'] = True
-        await update.message.reply_text("🔢 Введіть проміжок у форматі X-Y (наприклад: 10-20):\n\nФайли нумеруються від 1 до загальної кількості.")
+        
+        await update.message.reply_text(
+            "🔢 Введіть проміжок у форматі X-Y (наприклад: 10-20):\n\n"
+            "Файли нумеруються від 1 до загальної кількості."
+        )
         return True
     
     elif text == "⋯ Додаткові дії":
@@ -1020,13 +1041,11 @@ async def back_to_albums(update: Update, context: ContextTypes.DEFAULT_TYPE):
 from telegram.error import BadRequest
 
 async def show_display_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показати меню налаштувань відображення"""
     query = update.callback_query
     user_id = query.from_user.id
     
     settings = helpers.get_user_display_settings(db, user_id)
     
-    # Зрозуміла логіка: ✅ - увімкнено (відображається), ❌ - вимкнено (приховано)
     num_btn = "✅ Відображати номер файлу" if settings.get('show_number', True) else "❌ Відображати номер"
     date_btn = "✅ Відображати дату додавання" if settings.get('show_date', True) else "❌ Відображати дату"
     
@@ -1036,35 +1055,38 @@ async def show_display_settings(update: Update, context: ContextTypes.DEFAULT_TY
         [InlineKeyboardButton("◀️ Назад до налаштувань", callback_data="back_to_settings")]
     ]
     
-    await query.edit_message_text(
-        "👁 **Налаштування відображення**\n\n"
-        "Оберіть, яку інформацію додавати до файлів під час їх звичайного перегляду в альбомі:\n"
-        "*(✅ - увімкнено, ❌ - приховано)*",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='Markdown'
-    )
+    # Використовуємо try/except, щоб бот не падав, якщо повідомлення не змінилось
+    try:
+        await query.edit_message_text(
+            "👁 **Налаштування відображення**\n\n"
+            "Оберіть, яку інформацію додавати до файлів під час їх перегляду:\n"
+            "*(✅ - увімкнено, ❌ - приховано)*",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+    except BadRequest as e:
+        if "Message is not modified" in str(e):
+            print("Інтерфейс вже актуальний, редагування не потрібне.")
+        else:
+            raise e # Якщо помилка інша — прокидаємо її далі
+        
 
 async def toggle_display_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Змінити налаштування відображення"""
     query = update.callback_query
     user_id = query.from_user.id
     action = query.data
     
-    # Отримуємо всі налаштування (щоб не затерти приватність)
-    settings = helpers.get_privacy_settings(db, user_id)
+    # Обов'язково відповідаємо на запит, щоб кнопка відтиснулася
+    await query.answer()
     
-    # Додаємо дефолтні, якщо їх не було
-    if 'show_number' not in settings: settings['show_number'] = True
-    if 'show_date' not in settings: settings['show_date'] = True
+    settings = helpers.get_user_display_settings(db, user_id)
     
-    # Перемикаємо значення
     if action == "toggle_show_number":
-        settings['show_number'] = not settings['show_number']
+        settings['show_number'] = not settings.get('show_number', True)
     elif action == "toggle_show_date":
-        settings['show_date'] = not settings['show_date']
+        settings['show_date'] = not settings.get('show_date', True)
         
-    # Зберігаємо
-    helpers.save_privacy_settings(db, user_id, settings)
+    helpers.save_user_display_settings(db, user_id, settings)
     
     # Оновлюємо меню
     await show_display_settings(update, context)
@@ -1105,16 +1127,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     elif data == "back_to_settings":
         await show_settings(update, context)
-    
-    if data == "display_settings":
-        return await show_display_settings(update, context)
-    
-    if data in ["toggle_show_number", "toggle_show_date"]:
-        return await toggle_display_setting(update, context)
-    
-    if data == "back_to_settings":
-        # Тут викликаєш функцію головних налаштувань, яка у тебе вже є
-        return await show_settings_menu(update, context)
 
 
     # ===== СПІЛЬНІ АЛЬБОМИ =====
@@ -1527,7 +1539,7 @@ def main():
 
     # Group 1: ГЛОБАЛЬНІ ТЕКСТОВІ КОМАНДИ (Видалення за номером)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_delete_text), group=1)
-
+        
     # Group 2: УНІВЕРСАЛЬНИЙ ДИСПЕТЧЕР (Обробляє стани та кнопки альбомів)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_all_text_inputs), group=2)
 

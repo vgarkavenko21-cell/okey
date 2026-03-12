@@ -113,9 +113,7 @@ async def send_recent_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ========== НАДІСЛАТИ ОСТАННІ (Файл 3) ==========
 
 async def handle_recent_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обробник введення кількості останніх файлів для звичайного перегляду"""
-    
-    # Захист: якщо ми в меню видалення - ігноруємо
+    """Обробник введення кількості останніх файлів"""
     if context.user_data.get('in_delete_menu'):
         return False
         
@@ -124,47 +122,41 @@ async def handle_recent_count(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     try:
         count = int(update.message.text)
-        
         if count <= 0 or count > 50:
             await update.message.reply_text("❌ Введіть число від 1 до 50:")
             return True
         
         album_id = context.user_data.get('send_recent_album')
-        
-        if not album_id:
-            return False
-        
-        # ВИПРАВЛЕННЯ: Отримуємо всі файли і беремо ОСТАННІ з кінця списку
         all_files = db.get_album_files(album_id)
-        files = all_files[-count:] if all_files else []
         
-        album = db.get_album(album_id)
-        
-        if not files:
+        if not all_files:
             await update.message.reply_text("📭 В альбомі немає файлів.")
         else:
-            await update.message.reply_text(f"📤 Надсилаю останні {len(files)} файлів з альбому '{album['name']}'...")
+            total_count = len(all_files)
+            # Вираховуємо, з якого індексу починаються "останні" файли
+            start_index = max(0, total_count - count)
+            files_to_send = all_files[start_index:]
             
-            for file in files:
-                await send_file_by_type(update, context, file)
+            album = db.get_album(album_id)
+            await update.message.reply_text(f"📤 Надсилаю останні {len(files_to_send)} файлів з альбому '{album['name']}'...")
+            
+            # ВИПРАВЛЕНО: передаємо реальний індекс файлу в альбомі (починаючи з start_index + 1)
+            for i, file in enumerate(files_to_send, start=start_index + 1):
+                await send_file_by_type(update, context, file, index=i)
         
         # Очищаємо стан
         context.user_data['awaiting_recent_count'] = False
         context.user_data.pop('send_recent_album', None)
         
-        # Показуємо кнопку повернення
         album_keyboard = ReplyKeyboardMarkup([
-        [KeyboardButton("📤 Надіслати весь альбом")],
-        [KeyboardButton("⏳ Надіслати останні"), KeyboardButton("⏮ Надіслати перші")],
-        [KeyboardButton("🔢 Надіслати проміжок"), KeyboardButton("📅 Надіслати за датою")],
-        [KeyboardButton("⋯ Додаткові дії")],
-        [KeyboardButton("◀️ Вийти з альбому")]
-    ], resize_keyboard=True)
+            [KeyboardButton("📤 Надіслати весь альбом")],
+            [KeyboardButton("⏳ Надіслати останні"), KeyboardButton("⏮ Надіслати перші")],
+            [KeyboardButton("🔢 Надіслати проміжок"), KeyboardButton("📅 Надіслати за датою")],
+            [KeyboardButton("⋯ Додаткові дії")],
+            [KeyboardButton("◀️ Вийти з альбому")]
+        ], resize_keyboard=True)
         
-        await update.message.reply_text(
-            "✅ Готово!",
-            reply_markup=album_keyboard
-        )
+        await update.message.reply_text("✅ Готово!", reply_markup=album_keyboard)
         return True
         
     except ValueError:
