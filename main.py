@@ -1128,6 +1128,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "back_to_settings":
         await show_settings(update, context)
 
+    
+
 
     # ===== СПІЛЬНІ АЛЬБОМИ =====
     elif data == "shared_create":
@@ -1455,6 +1457,12 @@ async def handle_all_text_inputs(update: Update, context: ContextTypes.DEFAULT_T
         if text == "◀️ Назад до меню учасників":
             return await shared_members_main(update, context, album_id, access_level)
         
+        if text == "❌ Скасувати":
+            # Якщо ми в спільному альбомі — повертаємось в меню учасників
+            if ud.get('shared_album_active'):
+                await update.message.reply_text("🚫 Дія скасована.")
+                return await shared_members_main(update, context, album_id, access_level)
+        
         if text == "◀️ Назад до додаткових опцій":
             # Скидаємо прапорці, щоб не було конфліктів
             ud['shared_in_members_main'] = False
@@ -1489,18 +1497,60 @@ async def handle_all_text_inputs(update: Update, context: ContextTypes.DEFAULT_T
     if ud.get('awaiting_range'): return await handle_range_input_normal(update, context)
     if ud.get('awaiting_date'): return await handle_date_input(update, context)
 
-    # --- 4. НАВІГАЦІЯ (ЯКЩО СТАНИ НЕ АКТИВНІ) ---
+# --- 4. НАВІГАЦІЯ (ЯКЩО СТАНИ НЕ АКТИВНІ) ---
     if ud.get('shared_album_active'):
-        # Специфічні під-меню спільних альбомів
-        if ud.get('shared_selecting_member_for_removal'): return await shared_handle_remove_selection(update, context)
-        if ud.get('shared_in_role_selection'): return await shared_handle_role_text_input(update, context)
-        if ud.get('shared_in_members_main'): return await shared_handle_members_navigation(update, context)
+        text = update.message.text
         
-        # Основні кнопки (Надіслати все, Вийти тощо)
+        # --- 1. ПРІОРИТЕТ: ПЕРЕВІРКА НА КНОПКИ МЕНЮ ---
+        # Список усіх кнопок, які мають МИТТЄВО вимикати будь-який ввід тексту
+        ALL_SHARED_MENU_BUTTONS = [
+            "📤 Надіслати весь альбом", "⏳ Надіслати останні", "⏮ Надіслати перші",
+            "🔢 Надіслати проміжок", "📅 Надіслати за датою", "⋯ Додаткові опції",
+            "◀️ Вийти з альбому", "👥 Учасники", "ℹ️ Інформація", "🗑 Видалити файл",
+            "🗂 Архівувати альбом", "🗑 Видалити альбом", "◀️ Назад до альбому",
+            "◀️ Назад до додаткових опцій", "◀️ Назад до меню учасників",
+            "📋 Переглянути всіх учасників", "➕ Додати учасника", "⚙️ Змінити ролі", "🗑 Видалити учасника"
+        ]
+        
+        if text in ALL_SHARED_MENU_BUTTONS or text.startswith("◀️"):
+            # МИТТЄВО чистимо всі стани, щоб вони не заважали кнопкам
+            ud['shared_in_role_selection'] = False
+            ud['shared_selecting_member_for_removal'] = False
+            ud['shared_awaiting_member'] = False
+            # Після цього ми НЕ робимо return, а дозволяємо коду йти нижче до обробників кнопок
+            
+        # --- 2. ТЕПЕР ПЕРЕВІРЯЄМО СТАНИ (Тільки якщо це НЕ кнопка з меню) ---
+        if ud.get('shared_selecting_member_for_removal'): 
+            return await shared_handle_remove_selection(update, context)
+            
+        if ud.get('shared_in_role_selection'): 
+            return await shared_handle_role_text_input(update, context)
+            
+        if ud.get('shared_in_members_main'): 
+            return await shared_handle_members_navigation(update, context)
+
+        # --- 3. ОБРОБКА ОСНОВНИХ КНОПОК ---
         res = await shared_handle_main_buttons(update, context)
         if res: return True
         
-        # Додаткові опції (Архів, Учасники)
+        res = await shared_additional_menu(update, context)
+        if res: return True
+        
+        # КРОК 2: Тільки якщо це НЕ кнопка навігації, заходимо в специфічні стани
+        else:
+            if ud.get('shared_selecting_member_for_removal'): 
+                return await shared_handle_remove_selection(update, context)
+            
+            if ud.get('shared_in_role_selection'): 
+                return await shared_handle_role_text_input(update, context)
+            
+            if ud.get('shared_in_members_main'): 
+                return await shared_handle_members_navigation(update, context)
+        
+        # КРОК 3: Основні кнопки та меню
+        res = await shared_handle_main_buttons(update, context)
+        if res: return True
+        
         res = await shared_additional_menu(update, context)
         if res: return True
 
