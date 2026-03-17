@@ -41,13 +41,23 @@ from album_manage import (
 )
 # Імпорти функцій спільного альбому для головного файлу (main.py)
 # Імпорти для роботи зі спільними альбомами в main.py
+# На початку main.py, де інші імпорти
 from shared_albums import (
-    shared_handle_name,shared_members_main, shared_handle_recent_count, shared_handle_first_count,
-    shared_handle_range_input, shared_handle_date_input, shared_handle_member_input,
-    shared_handle_remove_confirmation, shared_handle_archive, shared_handle_delete_confirmation,
-    shared_handle_remove_selection, shared_handle_role_text_input, 
-    shared_handle_members_navigation, shared_additional_menu, 
-    shared_handle_main_buttons, shared_handle_file, shared_albums_main
+    shared_albums_main, shared_create_start, shared_handle_name,
+    shared_open_album, shared_additional_menu, shared_members_main,
+    shared_view_all_members, shared_add_member, shared_handle_member_input,
+    shared_manage_roles, shared_handle_role_text_input, shared_show_role_options,
+    handle_shared_role_back_button, shared_set_role, shared_remove_member_menu,
+    shared_handle_remove_selection, shared_confirm_remove_member,
+    shared_handle_remove_confirmation, shared_handle_members_navigation,
+    shared_album_info, shared_return_to_album, shared_exit_album,
+    shared_handle_file, shared_handle_main_buttons, shared_send_all,
+    shared_send_recent_start, shared_handle_recent_count, shared_send_first_start,
+    shared_handle_first_count, shared_send_range_start, shared_handle_range_input,
+    shared_send_by_date_start, shared_handle_date_input, send_file_by_type_shared,
+    shared_start_delete_menu, send_shared_file_for_deletion,
+    handle_shared_delete_choices, shared_handle_del_inputs,
+    shared_handle_delete_confirmation
 )
 
 # Налаштування логування
@@ -650,11 +660,31 @@ async def handle_album_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
             return True
             
         elif text == "◀️ Назад до альбому":
-            context.user_data['in_additional_menu'] = False
-            await return_to_album_keyboard(update, context, album_id)
+            # 1. Глобально чистимо ВСІ прапорці, які стосуються видалення та дод. опцій
+            states_to_reset = [
+                'in_additional_menu', 
+                'in_delete_menu', 
+                'delete_awaiting_recent', 
+                'delete_awaiting_first',
+                'delete_awaiting_range', 
+                'delete_awaiting_date'
+            ]
+            for state in states_to_reset:
+                ud.pop(state, None)
+
+            # 2. Дістаємо ID альбому (спробуй обидва варіанти, де він міг бути збережений)
+            album_id = ud.get('current_album') or ud.get('delete_menu_album')
+
+            if album_id:
+                # Повертаємо звичайну клавіатуру альбому
+                await return_to_album_keyboard(update, context, album_id)
+            else:
+                # Якщо раптом ID загубився — повертаємо в головне меню
+                await update.message.reply_text("🔙 Повертаємось...")
+                from main import handle_menu # залежно від структури
+                await handle_menu(update, context)
+            
             return True
-    
-    return False
 
 # ========== ФУНКЦІЇ ДЛЯ ДОДАТКОВОГО МЕНЮ ==========
 
@@ -743,9 +773,18 @@ async def handle_delete_confirmation(update: Update, context: ContextTypes.DEFAU
         return False
     
     user_input = update.message.text.strip()
-    correct_name = context.user_data.get('album_name_to_delete')
     album_id = context.user_data.get('deleting_album')
+    correct_name = context.user_data.get('album_name_to_delete')
     
+    if album_id and not correct_name:
+        # Підтвердження могло бути запущене з іншого місця (наприклад, інлайн-меню),
+        # де назву не зберегли в user_data. Дістаємо її з БД як фолбек.
+        album = db.get_album(album_id)
+        if album:
+            correct_name = album.get('name')
+            if correct_name:
+                context.user_data['album_name_to_delete'] = correct_name
+
     if not correct_name or not album_id:
         return False
     
@@ -1128,8 +1167,49 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "back_to_settings":
         await show_settings(update, context)
 
-    
 
+    if data.startswith("ask_del_"):
+        parts = data.split('_')
+        f_id, alb_id = parts[2], parts[3]
+        
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Так, видалити", callback_data=f"do_del_{f_id}"),
+                InlineKeyboardButton("❌ Ні", callback_data=f"cancel_del_{f_id}_{alb_id}")
+            ]
+        ])
+        
+        await query.edit_message_caption(
+            caption="⚠️ Видалити цей файл?",
+            reply_markup=keyboard
+        )
+        return
+
+    if data.startswith("do_del_"):
+        f_id = int(data.split('_')[2])
+
+        try:
+            db.cursor.execute("DELETE FROM files WHERE id = ?", (f_id,))
+        except:
+            db.cursor.execute("DELETE FROM files WHERE file_id = ?", (f_id,))
+        
+        db.conn.commit()
+        await query.message.delete()
+        return
+
+    if data.startswith("cancel_del_"):
+        parts = data.split('_')
+        f_id, alb_id = parts[2], parts[3]
+
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🗑 Видалити", callback_data=f"ask_del_{f_id}_{alb_id}")
+        ]])
+
+        await query.edit_message_caption(
+            caption=None,
+            reply_markup=keyboard
+        )
+        return
 
     # ===== СПІЛЬНІ АЛЬБОМИ =====
     elif data == "shared_create":
@@ -1180,7 +1260,33 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from shared_albums import shared_show_role_options
         await shared_show_role_options(update, context, target_user_id)
 
+# ---------- ПІДТВЕРДЖЕННЯ ВИДАЛЕННЯ (СПІЛЬНІ) ----------
+    elif data.startswith("shared_ask_del_"):
+        parts = data.split('_')
+        f_id, alb_id = parts[3], parts[4]
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Так", callback_data=f"shared_do_del_{f_id}_{alb_id}"),
+            InlineKeyboardButton("❌ Ні", callback_data=f"shared_cancel_del_{f_id}_{alb_id}")
+        ]])
+        await query.edit_message_caption(caption="⚠️ **Видалити цей файл для всіх?**", reply_markup=keyboard, parse_mode='Markdown')
 
+    elif data.startswith("shared_do_del_"):
+        parts = data.split('_')
+        f_id, alb_id = int(parts[3]), int(parts[4])
+        # Перевірка прав (можна додати)
+        try:
+            db.cursor.execute("DELETE FROM files WHERE id = ?", (f_id,))
+        except:
+            db.cursor.execute("DELETE FROM files WHERE file_id = ?", (f_id,))
+        db.conn.commit()
+        await query.message.delete()
+        await query.answer("🗑 Видалено для всіх учасників")
+
+    elif data.startswith("shared_cancel_del_"):
+        parts = data.split('_')
+        f_id, alb_id = parts[3], parts[4]
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🗑 Видалити", callback_data=f"shared_ask_del_{f_id}_{alb_id}")]])
+        await query.edit_message_caption(caption=None, reply_markup=keyboard)
     
     # ===== ДОДАТКОВІ ДІЇ =====
     elif data.startswith("album_info_"):
@@ -1211,8 +1317,50 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Після архівації повертаємось до списку альбомів
         await back_to_albums(update, context)
     
+    # 1. ЕТАП: Запит на видалення всього альбому (натиснули кнопку в меню)
     elif data.startswith("delete_album_"):
-        await delete_album_start(update, context)
+        album_id = data.split('_')[2]
+        
+        # Отримуємо назву альбому для тексту підтвердження
+        album = db.cursor.execute("SELECT title FROM albums WHERE id = ?", (album_id,)).fetchone()
+        album_name = album['title'] if album else "цей альбом"
+
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🔥 ТАК, видалити все", callback_data=f"confirm_full_del_alb_{album_id}"),
+                InlineKeyboardButton("❌ Скасувати", callback_data=f"open_album_{album_id}")
+            ]
+        ])
+
+        await query.edit_message_text(
+            text=f"❓ **Ви впевнені, що хочете видалити альбом «{album_name}»?**\n\n"
+                 f"⚠️ Ця дія видалить сам альбом та **УСІ файли** в ньому безповоротно!",
+            reply_markup=keyboard,
+            parse_mode='Markdown'
+        )
+
+    # 2. ЕТАП: Остаточне підтвердження (натиснули "ТАК")
+    elif data.startswith("confirm_full_del_alb_"):
+        album_id = int(data.split('_')[4])
+        
+        try:
+            # Видаляємо всі файли альбому
+            db.cursor.execute("DELETE FROM files WHERE album_id = ?", (album_id,))
+            # Видаляємо сам альбом
+            db.cursor.execute("DELETE FROM albums WHERE id = ?", (album_id,))
+            
+            db.conn.commit()
+            
+            await query.answer("✅ Альбом та всі файли видалено", show_alert=True)
+            # Повертаємо користувача до списку всіх альбомів
+            await back_to_albums(update, context) 
+            
+        except Exception as e:
+            await query.answer(f"❌ Помилка при видаленні: {e}", show_alert=True)
+
+    # 3. ЕТАП: Скасування (натиснули "НІ" — повертаємось в меню альбому)
+    # Цей етап зазвичай обробляється через data.startswith("open_album_"), 
+    # який у вас вже є в коді, тому окремий блок не потрібен.
     
     elif data.startswith("del_page_"):
         parts = data.split('_')
@@ -1278,6 +1426,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "cancel_file_delete":
         from file_delete import cancel_file_delete
         await cancel_file_delete(update, context)
+
+    elif query.data.startswith('shared_confirm_delete_'):
+        await handle_shared_delete_callback(update, context)
 
 
     elif data == "show_archived":
@@ -1425,51 +1576,82 @@ async def admin_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
 
+async def shared_delete_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Хендлер, який запускає видалення у спільному альбомі"""
+    ud = context.user_data
+    text = update.message.text
+
+    DELETE_BUTTONS = [
+        "Видалити: Весь альбом",
+        "Видалити: Останні",
+        "Видалити: Перші",
+        "Видалити: Проміжок",
+        "Видалити: За датою"
+    ]
+
+    if ud.get('shared_in_delete_menu') and (
+        text in DELETE_BUTTONS
+        or ud.get('shared_del_awaiting_recent')
+        or ud.get('shared_del_awaiting_first')
+        or ud.get('shared_del_awaiting_range')
+        or ud.get('shared_del_awaiting_date')
+    ):
+        print("👉 В РЕЖИМІ ВИДАЛЕННЯ")
+
+        res = await handle_shared_delete_choices(update, context)
+        if res:
+            print("✅ handle_shared_delete_choices СПРАЦЮВАВ")
+            return True
+
+        res = await shared_handle_del_inputs(update, context)
+        if res:
+            print("✅ shared_handle_del_inputs СПРАЦЮВАВ")
+            return True
+
+    return False
 
 async def handle_all_text_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ud = context.user_data
     text = update.message.text
     if not text: return False
-
-    # --- 1. ПЕРЕХОПЛЮВАЧ НАВІГАЦІЙНИХ КНОПОК (Миттєва реакція) ---
-    # Додаємо твої кнопки сюди
-    NAVIGATION_BUTTONS = [
-        "◀️ Назад до меню учасників",
-        "◀️ Назад до додаткових опцій",
-        "◀️ Назад до альбому",
-        "❌ Скасувати"
-    ]
-
-    if text in NAVIGATION_BUTTONS:
-        # Миттєво скидаємо стани очікування вводу, щоб вони не блокували перехід
+    
+    # --- 1. ПРІОРИТЕТНА НАВІГАЦІЯ (ОБРОБКА ТОГО, ЩО ПРИЙШЛО З GROUP 1) ---
+    if text == "◀️ Назад до альбому":
+        print(f"✅ Головний обробник: повертаємось до альбому з тексту '{text}'")
+        
+        # Миттєво чистимо ВСІ режими, щоб бот "протверезів"
         states_to_reset = [
-            'shared_awaiting_member', 'shared_awaiting_date', 
-            'shared_awaiting_recent_count', 'shared_awaiting_first_count',
-            'shared_awaiting_range', 'shared_selecting_member_for_removal'
+            'in_delete_menu', 'in_additional_menu', 
+            'delete_awaiting_recent', 'delete_awaiting_first', 
+            'delete_awaiting_range', 'delete_awaiting_date',
+            'shared_in_delete_menu', 'shared_del_awaiting_recent',
+            'shared_del_awaiting_first', 'shared_del_awaiting_range',
+            'shared_del_awaiting_date'
         ]
         for state in states_to_reset:
             ud.pop(state, None)
 
-        # Пряма маршрутизація для навігації
-        album_id = ud.get('current_shared_album')
-        access_level = ud.get('shared_access_level')
+        # Шукаємо ID альбому (важливо перевірити всі можливі ключі)
+        album_id = ud.get('current_album') or ud.get('delete_menu_album') or ud.get('shared_delete_album_id') or ud.get('current_shared_album')
 
-        if text == "◀️ Назад до меню учасників":
-            return await shared_members_main(update, context, album_id, access_level)
-        
-        if text == "❌ Скасувати":
-            # Якщо ми в спільному альбомі — повертаємось в меню учасників
+        if album_id:
+            # Якщо це спільний альбом
             if ud.get('shared_album_active'):
-                await update.message.reply_text("🚫 Дія скасована.")
-                return await shared_members_main(update, context, album_id, access_level)
-        
-        if text == "◀️ Назад до додаткових опцій":
-            # Скидаємо прапорці, щоб не було конфліктів
-            ud['shared_in_members_main'] = False
-            # Викликаємо оновлену функцію
-            return await shared_additional_menu(update, context)
+                from shared_albums import shared_return_to_album
+                await shared_return_to_album(update, context, album_id)
+            else:
+                # Якщо це звичайний особистий альбом
+                from albums import return_to_album_keyboard
+                await return_to_album_keyboard(update, context, album_id)
+        else:
+            # Якщо ID зовсім загубився, повертаємо в головне меню
+            await update.message.reply_text("🏠 Повернення до головного меню...")
+            from main import handle_menu 
+            await handle_menu(update, context)
+            
+        return True
 
-    # --- 1. СПІЛЬНІ АЛЬБОМИ (ПРІОРИТЕТНІ СТАНИ) ---
+    # --- 2. СПІЛЬНІ АЛЬБОМИ (ПРІОРИТЕТНІ СТАНИ) ---
     if ud.get('shared_awaiting_name'): return await shared_handle_name(update, context)
     if ud.get('shared_awaiting_recent_count'): return await shared_handle_recent_count(update, context)
     if ud.get('shared_awaiting_first_count'): return await shared_handle_first_count(update, context)
@@ -1479,47 +1661,43 @@ async def handle_all_text_inputs(update: Update, context: ContextTypes.DEFAULT_T
     if ud.get('shared_removing_member'): return await shared_handle_remove_confirmation(update, context)
     if ud.get('shared_awaiting_archive'): return await shared_handle_archive(update, context)
     if ud.get('shared_awaiting_delete_confirm'): return await shared_handle_delete_confirmation(update, context)
+    
+    # --- 3. СПІЛЬНЕ ВИДАЛЕННЯ (ввід чисел) ---
+    if ud.get('shared_del_awaiting_recent') or ud.get('shared_del_awaiting_first') or \
+       ud.get('shared_del_awaiting_range') or ud.get('shared_del_awaiting_date'):
+        if await shared_handle_del_inputs(update, context):
+            return True
 
-    # --- 2. РЕЖИМ ВИДАЛЕННЯ (СТАНИ) ---
-    if ud.get('in_delete_menu'):
-        if ud.get('delete_awaiting_recent'): return await delete_handle_recent_input(update, context)
-        if ud.get('delete_awaiting_first'): return await delete_handle_first_input(update, context)
-        if ud.get('delete_awaiting_range'): return await delete_handle_range_input(update, context)
-        if ud.get('delete_awaiting_date'): return await delete_handle_date_input(update, context)
-        # Кнопки меню видалення
-        res = await handle_delete_menu_buttons(update, context)
-        if res: return True
-
-    # --- 3. ОСОБИСТІ АЛЬБОМИ (СТАНИ) ---
+    # --- 4. ОСОБИСТІ АЛЬБОМИ (СТАНИ) ---
     if ud.get('awaiting_album_name'): return await handle_album_name(update, context)
     if ud.get('awaiting_recent_count'): return await handle_recent_count(update, context)
     if ud.get('awaiting_first_count'): return await handle_first_count(update, context)
     if ud.get('awaiting_range'): return await handle_range_input_normal(update, context)
     if ud.get('awaiting_date'): return await handle_date_input(update, context)
+    if ud.get('awaiting_album_name_confirm'): return await handle_delete_confirmation(update, context)
 
-# --- 4. НАВІГАЦІЯ (ЯКЩО СТАНИ НЕ АКТИВНІ) ---
+    # --- 5. РЕЖИМ ВИДАЛЕННЯ (ЗВИЧАЙНІ АЛЬБОМИ) ---
+    if ud.get('in_delete_menu'):
+        album_id = ud.get('delete_menu_album')
+        
+        # Обробка введення цифр
+        if ud.get('delete_awaiting_recent'): return await delete_handle_recent_input(update, context)
+        if ud.get('delete_awaiting_first'): return await delete_handle_first_input(update, context)
+        if ud.get('delete_awaiting_range'): return await delete_handle_range_input(update, context)
+        if ud.get('delete_awaiting_date'): return await delete_handle_date_input(update, context)
+
+        # Обробка кнопок меню видалення
+        res = await handle_delete_menu_buttons(update, context, text, album_id)
+        if res: return True
+
+    # --- 6. НАВІГАЦІЯ В СПІЛЬНИХ АЛЬБОМАХ ---
     if ud.get('shared_album_active'):
-        text = update.message.text
+        # Використовуємо універсальний обробник для всіх кнопок спільного альбому
+        from shared_albums import shared_handle_all_buttons
+        if await shared_handle_all_buttons(update, context):
+            return True
         
-        # --- 1. ПРІОРИТЕТ: ПЕРЕВІРКА НА КНОПКИ МЕНЮ ---
-        # Список усіх кнопок, які мають МИТТЄВО вимикати будь-який ввід тексту
-        ALL_SHARED_MENU_BUTTONS = [
-            "📤 Надіслати весь альбом", "⏳ Надіслати останні", "⏮ Надіслати перші",
-            "🔢 Надіслати проміжок", "📅 Надіслати за датою", "⋯ Додаткові опції",
-            "◀️ Вийти з альбому", "👥 Учасники", "ℹ️ Інформація", "🗑 Видалити файл",
-            "🗂 Архівувати альбом", "🗑 Видалити альбом", "◀️ Назад до альбому",
-            "◀️ Назад до додаткових опцій", "◀️ Назад до меню учасників",
-            "📋 Переглянути всіх учасників", "➕ Додати учасника", "⚙️ Змінити ролі", "🗑 Видалити учасника"
-        ]
-        
-        if text in ALL_SHARED_MENU_BUTTONS or text.startswith("◀️"):
-            # МИТТЄВО чистимо всі стани, щоб вони не заважали кнопкам
-            ud['shared_in_role_selection'] = False
-            ud['shared_selecting_member_for_removal'] = False
-            ud['shared_awaiting_member'] = False
-            # Після цього ми НЕ робимо return, а дозволяємо коду йти нижче до обробників кнопок
-            
-        # --- 2. ТЕПЕР ПЕРЕВІРЯЄМО СТАНИ (Тільки якщо це НЕ кнопка з меню) ---
+        # Якщо не спрацювало, пробуємо старі обробники для сумісності
         if ud.get('shared_selecting_member_for_removal'): 
             return await shared_handle_remove_selection(update, context)
             
@@ -1528,38 +1706,25 @@ async def handle_all_text_inputs(update: Update, context: ContextTypes.DEFAULT_T
             
         if ud.get('shared_in_members_main'): 
             return await shared_handle_members_navigation(update, context)
-
-        # --- 3. ОБРОБКА ОСНОВНИХ КНОПОК ---
-        res = await shared_handle_main_buttons(update, context)
-        if res: return True
         
-        res = await shared_additional_menu(update, context)
-        if res: return True
+        # Кнопки видалення
+        if text.startswith("Видалити:"):
+            if await handle_shared_delete_choices(update, context):
+                return True
         
-        # КРОК 2: Тільки якщо це НЕ кнопка навігації, заходимо в специфічні стани
-        else:
-            if ud.get('shared_selecting_member_for_removal'): 
-                return await shared_handle_remove_selection(update, context)
-            
-            if ud.get('shared_in_role_selection'): 
-                return await shared_handle_role_text_input(update, context)
-            
-            if ud.get('shared_in_members_main'): 
-                return await shared_handle_members_navigation(update, context)
-        
-        # КРОК 3: Основні кнопки та меню
+        # Основні кнопки
         res = await shared_handle_main_buttons(update, context)
         if res: return True
         
         res = await shared_additional_menu(update, context)
         if res: return True
 
-    # --- 5. КНОПКИ ЗВИЧАЙНИХ АЛЬБОМІВ ---
+    # --- 7. КНОПКИ ЗВИЧАЙНИХ АЛЬБОМІВ ---
     if ud.get('album_keyboard_active') or ud.get('current_album'):
         res = await handle_album_buttons(update, context)
         if res: return True
 
-    return False # Йдемо в головне меню (Group 5)
+    return False
 
 async def handle_all_files_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Єдиний вхід для всіх медіа"""
