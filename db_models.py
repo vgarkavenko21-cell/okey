@@ -132,8 +132,8 @@ class Database:
         return self.cursor.lastrowid
     
     def get_user_albums(self, user_id, include_archived=False):
-        """Отримати список альбомів користувача"""
-        query = "SELECT * FROM albums WHERE user_id = ?"
+        """Отримати список особистих (НЕ спільних) альбомів користувача"""
+        query = "SELECT * FROM albums WHERE user_id = ? AND is_shared = 0"
         if not include_archived:
             query += " AND is_archived = 0"
         query += " ORDER BY created_at DESC"
