@@ -341,7 +341,7 @@ async def shared_handle_del_inputs(update: Update, context: ContextTypes.DEFAULT
     return False
 
 async def shared_handle_del_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обробник цифрового вводу для видалення"""
+    """Обробник цифрового вводу для видалення (спільні альбоми)"""
     ud = context.user_data
     text = update.message.text
     album_id = ud.get('shared_delete_album_id')
@@ -390,47 +390,6 @@ async def shared_handle_del_inputs(update: Update, context: ContextTypes.DEFAULT
             
     except Exception as e:
         print(f"❌ Помилка формату: {e}")
-        await update.message.reply_text(f"❌ Помилка формату: {e}")
-        return True
-
-    return False
-
-
-async def shared_handle_del_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обробник цифрового вводу для видалення (ТОЙ САМИЙ, ЯКИЙ НЕ ЗНАХОДИТЬ PYTHON)"""
-    ud = context.user_data
-    text = update.message.text
-    album_id = ud.get('shared_delete_album_id')
-    
-    if not album_id: return False
-    all_files = db.get_album_files(album_id)
-
-    try:
-        # 1. Останні
-        if ud.get('shared_del_awaiting_recent'):
-            count = int(text)
-            selected = list(enumerate(all_files, 1))[-count:]
-            for idx, f in selected: await send_shared_file_for_deletion(update, context, f, idx)
-            ud['shared_del_awaiting_recent'] = False
-            return True
-
-        # 2. Перші
-        if ud.get('shared_del_awaiting_first'):
-            count = int(text)
-            selected = list(enumerate(all_files, 1))[:count]
-            for idx, f in selected: await send_shared_file_for_deletion(update, context, f, idx)
-            ud['shared_del_awaiting_first'] = False
-            return True
-
-        # 3. Проміжок
-        if ud.get('shared_del_awaiting_range'):
-            start, end = map(int, text.split('-'))
-            selected = all_files[start-1:end]
-            for i, f in enumerate(selected): await send_shared_file_for_deletion(update, context, f, start+i)
-            ud['shared_del_awaiting_range'] = False
-            return True
-            
-    except Exception as e:
         await update.message.reply_text(f"❌ Помилка формату: {e}")
         return True
 
@@ -1054,18 +1013,12 @@ async def shared_handle_all_buttons(update: Update, context: ContextTypes.DEFAUL
         return await shared_exit_album(update, context)
     
     # --- 3. КНОПКИ МЕНЮ ВИДАЛЕННЯ ---
-    if text.startswith("Видалити:"):
+    if text.startswith("Надіслати:"):
         if await handle_shared_delete_choices(update, context):
             return True
     
     # --- 4. ІНШІ КНОПКИ (ОСНОВНІ ТА ДОДАТКОВІ) ---
-    # Якщо ми в меню видалення - ігноруємо інші кнопки
-    if ud.get('shared_in_delete_menu'):
-        if text in ["📤 Надіслати весь альбом", "⏳ Надіслати останні", "⏮ Надіслати перші", 
-                    "🔢 Надіслати проміжок", "📅 Надіслати за датою", "⋯ Додаткові опції"]:
-            await update.message.reply_text("⚠️ Спочатку вийдіть з меню видалення (натисніть '◀️ Назад до альбому')")
-            return True
-        return False
+    # Не блокуємо основні кнопки, навіть якщо shared_in_delete_menu=True.
     
     # --- 5. ОСНОВНІ КНОПКИ АЛЬБОМУ ---
     if "Надіслати весь альбом" in text:
@@ -1115,12 +1068,12 @@ async def shared_start_delete_menu(update: Update, context: ContextTypes.DEFAULT
         f"Всього в альбомі: {total_files}"
     )
     
-    # Використовуємо префікс "Видалити:", щоб відрізнити від звичайного меню
+    # Використовуємо префікс "Надіслати:", щоб відрізнити від звичайного меню
     delete_keyboard = ReplyKeyboardMarkup([
-        [KeyboardButton("Видалити: Весь альбом")],
-        [KeyboardButton("Видалити: Останні"), KeyboardButton("Видалити: Перші")],
-        [KeyboardButton("Видалити: Проміжок")],
-        [KeyboardButton("Видалити: За датою")],
+        [KeyboardButton("Надіслати: Весь альбом")],
+        [KeyboardButton("Надіслати: Останні"), KeyboardButton("Надіслати: Перші")],
+        [KeyboardButton("Надіслати: Проміжок")],
+        [KeyboardButton("Надіслати: За датою")],
         [KeyboardButton("◀️ Назад до альбому")]
     ], resize_keyboard=True)
     
@@ -1138,17 +1091,6 @@ async def shared_start_delete_menu(update: Update, context: ContextTypes.DEFAULT
         parse_mode='Markdown'
     )
 
-    # Якщо файлів мало, одразу надішлемо їх для видалення
-    if total_files > 0 and total_files <= 10:
-        print(f"🔍 Надсилаю {total_files} файлів для видалення...")
-        for idx, file in enumerate(files, 1):
-            # Перетворюємо sqlite3.Row у словник
-            file_dict = dict(file)
-            print(f"🔍 Надсилаю файл #{idx}: {file_dict.get('telegram_file_id')}")
-            await send_shared_file_for_deletion(update, context, file_dict, index=idx)
-    elif total_files > 10:
-        await update.message.reply_text(f"ℹ️ В альбомі {total_files} файлів. Оберіть опцію вище, щоб надіслати частину файлів.")
-
 async def handle_shared_delete_choices(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Вибір режиму видалення в меню спільного альбому"""
     text = update.message.text
@@ -1158,7 +1100,7 @@ async def handle_shared_delete_choices(update: Update, context: ContextTypes.DEF
     if not ud.get('shared_in_delete_menu') or not album_id:
         return False
 
-    if text == "Видалити: Весь альбом":
+    if text == "Надіслати: Весь альбом":
         files = db.get_album_files(album_id)
         await update.message.reply_text(f"📤 Надсилаю {len(files)} файлів для видалення...")
         for idx, file in enumerate(files, 1):
@@ -1167,22 +1109,22 @@ async def handle_shared_delete_choices(update: Update, context: ContextTypes.DEF
             await send_shared_file_for_deletion(update, context, file_dict, index=idx)
         return True
 
-    elif text == "Видалити: Останні":
+    elif text == "Надіслати: Останні":
         ud['shared_del_awaiting_recent'] = True
         await update.message.reply_text("⏳ Скільки останніх файлів надіслати для видалення?")
         return True
 
-    elif text == "Видалити: Перші":
+    elif text == "Надіслати: Перші":
         ud['shared_del_awaiting_first'] = True
         await update.message.reply_text("⏮ Скільки перших файлів надіслати для видалення?")
         return True
 
-    elif text == "Видалити: Проміжок":
+    elif text == "Надіслати: Проміжок":
         ud['shared_del_awaiting_range'] = True
         await update.message.reply_text("🔢 Введіть проміжок для видалення (наприклад: 1-10):")
         return True
 
-    elif text == "Видалити: За датою":
+    elif text == "Надіслати: За датою":
         ud['shared_del_awaiting_date'] = True
         await update.message.reply_text("📅 Введіть дату (РРРР-ММ-ДД):")
         return True
@@ -1278,11 +1220,11 @@ async def send_shared_file_for_deletion(update: Update, context: ContextTypes.DE
         await update.message.reply_text(f"❌ Помилка: файл #{index} не має ID в базі даних")
         return
 
-    # Створюємо кнопку для підтвердження видалення
+    # КРОК 1: кнопка "Видалити №N" лише запитує підтвердження
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton(
             f"🗑 Видалити №{index}", 
-            callback_data=f"shared_confirm_delete_{file_id_db}_{album_id}"
+            callback_data=f"shared_askdel_{file_id_db}_{album_id}"
         )
     ]])
 
@@ -1329,18 +1271,9 @@ async def handle_shared_delete_callback(update: Update, context: ContextTypes.DE
         """, (album_id, album_id))
         db.conn.commit()
         
-        await query.edit_message_text("✅ Файл успішно видалено!")
-        
-        # Перевіряємо, чи потрібно оновити меню видалення
-        if context.user_data.get('shared_in_delete_menu'):
-            # Можна запропонувати оновити список
-            await query.message.reply_text(
-                "🔄 Натисніть 'Видалити: Весь альбом' щоб побачити оновлений список файлів",
-                reply_markup=ReplyKeyboardMarkup([
-                    [KeyboardButton("Видалити: Весь альбом")],
-                    [KeyboardButton("◀️ Назад до альбому")]
-                ], resize_keyboard=True)
-            )
+        # Повідомлення з файлом є медіа, тому редагуємо підпис, а не текст.
+        # Reply-клавіатуру меню (Надіслати весь / останні / проміжок / за датою) НЕ змінюємо.
+        await query.edit_message_caption(caption="✅ Файл успішно видалено!")
     except Exception as e:
         print(f"❌ Помилка видалення файлу: {e}")
         await query.edit_message_text(f"❌ Помилка видалення файлу: {e}")

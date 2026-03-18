@@ -57,7 +57,7 @@ from shared_albums import (
     shared_send_by_date_start, shared_handle_date_input, send_file_by_type_shared,
     shared_start_delete_menu, send_shared_file_for_deletion,
     handle_shared_delete_choices, shared_handle_del_inputs,
-    shared_handle_delete_confirmation
+    shared_handle_delete_confirmation, handle_shared_delete_callback
 )
 
 # Налаштування логування
@@ -1187,12 +1187,21 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("do_del_"):
         f_id = int(data.split('_')[2])
-
+        album_row = None
         try:
+            album_row = db.cursor.execute("SELECT album_id FROM files WHERE id = ?", (f_id,)).fetchone()
             db.cursor.execute("DELETE FROM files WHERE id = ?", (f_id,))
-        except:
+        except Exception:
+            album_row = db.cursor.execute("SELECT album_id FROM files WHERE file_id = ?", (f_id,)).fetchone()
             db.cursor.execute("DELETE FROM files WHERE file_id = ?", (f_id,))
-        
+
+        if album_row is not None:
+            album_id = album_row['album_id']
+            db.cursor.execute(
+                "UPDATE albums SET files_count = (SELECT COUNT(*) FROM files WHERE album_id = ?) WHERE album_id = ?",
+                (album_id, album_id)
+            )
+
         db.conn.commit()
         await query.message.delete()
         return
@@ -1260,32 +1269,28 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from shared_albums import shared_show_role_options
         await shared_show_role_options(update, context, target_user_id)
 
-# ---------- ПІДТВЕРДЖЕННЯ ВИДАЛЕННЯ (СПІЛЬНІ) ----------
-    elif data.startswith("shared_ask_del_"):
+    # ---------- ПІДТВЕРДЖЕННЯ ВИДАЛЕННЯ ФАЙЛУ (СПІЛЬНІ) ----------
+    elif data.startswith("shared_askdel_"):
+        # Формат: shared_askdel_{file_id_db}_{album_id}
+        parts = data.split('_')
+        f_id, alb_id = parts[2], parts[3]
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Так, видалити", callback_data=f"shared_confirm_delete_{f_id}_{alb_id}"),
+            InlineKeyboardButton("❌ Ні", callback_data=f"shared_cancel_del_{f_id}_{alb_id}")
+        ]])
+        await query.edit_message_caption(
+            caption="🗑 Ви впевнені, що хочете видалити цей файл зі спільного альбому?",
+            reply_markup=keyboard,
+            parse_mode='Markdown'
+        )
+
+    elif data.startswith("shared_cancel_del_"):
+        # Повертаємо вихідну кнопку "Видалити №N" без видалення файлу
         parts = data.split('_')
         f_id, alb_id = parts[3], parts[4]
         keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Так", callback_data=f"shared_do_del_{f_id}_{alb_id}"),
-            InlineKeyboardButton("❌ Ні", callback_data=f"shared_cancel_del_{f_id}_{alb_id}")
+            InlineKeyboardButton("🗑 Видалити", callback_data=f"shared_askdel_{f_id}_{alb_id}")
         ]])
-        await query.edit_message_caption(caption="⚠️ **Видалити цей файл для всіх?**", reply_markup=keyboard, parse_mode='Markdown')
-
-    elif data.startswith("shared_do_del_"):
-        parts = data.split('_')
-        f_id, alb_id = int(parts[3]), int(parts[4])
-        # Перевірка прав (можна додати)
-        try:
-            db.cursor.execute("DELETE FROM files WHERE id = ?", (f_id,))
-        except:
-            db.cursor.execute("DELETE FROM files WHERE file_id = ?", (f_id,))
-        db.conn.commit()
-        await query.message.delete()
-        await query.answer("🗑 Видалено для всіх учасників")
-
-    elif data.startswith("shared_cancel_del_"):
-        parts = data.split('_')
-        f_id, alb_id = parts[3], parts[4]
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🗑 Видалити", callback_data=f"shared_ask_del_{f_id}_{alb_id}")]])
         await query.edit_message_caption(caption=None, reply_markup=keyboard)
     
     # ===== ДОДАТКОВІ ДІЇ =====
@@ -1582,11 +1587,11 @@ async def shared_delete_dispatcher(update: Update, context: ContextTypes.DEFAULT
     text = update.message.text
 
     DELETE_BUTTONS = [
-        "Видалити: Весь альбом",
-        "Видалити: Останні",
-        "Видалити: Перші",
-        "Видалити: Проміжок",
-        "Видалити: За датою"
+        "Надіслати: Весь альбом",
+        "Надіслати: Останні",
+        "Надіслати: Перші",
+        "Надіслати: Проміжок",
+        "Надіслати: За датою"
     ]
 
     if ud.get('shared_in_delete_menu') and (
@@ -1614,6 +1619,32 @@ async def handle_all_text_inputs(update: Update, context: ContextTypes.DEFAULT_T
     ud = context.user_data
     text = update.message.text
     if not text: return False
+
+    # Якщо користувач натискає кнопки спільного альбому, але прапорець shared_album_active
+    # з якихось причин злетів — відновлюємо стан з того, що вже є в user_data.
+    SHARED_MENU_BUTTONS = {
+        "📤 Надіслати весь альбом",
+        "⏳ Надіслати останні",
+        "⏮ Надіслати перші",
+        "🔢 Надіслати проміжок",
+        "📅 Надіслати за датою",
+        "⋯ Додаткові опції",
+        "◀️ Вийти з альбому",
+        "◀️ Назад до альбому",
+        "◀️ Назад до додаткових опцій",
+    }
+    if text in SHARED_MENU_BUTTONS and ud.get('current_shared_album') and not ud.get('shared_album_active'):
+        ud['shared_album_active'] = True
+        if not ud.get('shared_access_level'):
+            try:
+                row = db.cursor.execute(
+                    "SELECT access_level FROM shared_albums WHERE album_id = ? AND user_id = ?",
+                    (ud.get('current_shared_album'), update.effective_user.id)
+                ).fetchone()
+                if row and row.get('access_level'):
+                    ud['shared_access_level'] = row['access_level']
+            except Exception:
+                pass
     
     # --- 1. ПРІОРИТЕТНА НАВІГАЦІЯ (ОБРОБКА ТОГО, ЩО ПРИЙШЛО З GROUP 1) ---
     if text == "◀️ Назад до альбому":
@@ -1640,8 +1671,7 @@ async def handle_all_text_inputs(update: Update, context: ContextTypes.DEFAULT_T
                 from shared_albums import shared_return_to_album
                 await shared_return_to_album(update, context, album_id)
             else:
-                # Якщо це звичайний особистий альбом
-                from albums import return_to_album_keyboard
+                # Звичайний особистий альбом: використовуємо локальну функцію
                 await return_to_album_keyboard(update, context, album_id)
         else:
             # Якщо ID зовсім загубився, повертаємо в головне меню
