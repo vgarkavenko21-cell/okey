@@ -656,7 +656,30 @@ async def handle_album_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
             return True
             
         elif text == "👥 Зробити спільним":
-            await update.message.reply_text("👥 Функція спільних альбомів в розробці")
+            user_id = update.effective_user.id
+            ok, reason = db.make_album_shared(album_id, user_id)
+            if ok:
+                # Переключаємося зі звичайного режиму на спільний
+                context.user_data['album_keyboard_active'] = False
+                context.user_data.pop('current_album', None)
+                context.user_data.pop('in_additional_menu', None)
+
+                context.user_data['shared_album_active'] = False
+                context.user_data.pop('current_shared_album', None)
+                context.user_data.pop('shared_access_level', None)
+
+                await update.message.reply_text("✅ Альбом перенесено до **Спільних альбомів**.", parse_mode='Markdown')
+                await shared_albums_main(update, context)
+                return True
+
+            if reason == "not_owner":
+                await update.message.reply_text("❌ Тільки власник альбому може зробити його спільним.")
+                return True
+            if reason == "not_found":
+                await update.message.reply_text("❌ Альбом не знайдено.")
+                return True
+
+            await update.message.reply_text("❌ Не вдалося зробити альбом спільним (помилка бази даних).")
             return True
             
         elif text == "◀️ Назад до альбому":

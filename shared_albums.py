@@ -44,7 +44,6 @@ async def shared_albums_main(update: Update, context: ContextTypes.DEFAULT_TYPE)
         text += "У вас немає спільних альбомів.\n"
     
     keyboard.append([InlineKeyboardButton("➕ Створити новий спільний", callback_data="shared_create")])
-    keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="back_to_main")])
     
     # Видаляємо старі повідомлення для чистоти інтерфейсу
     if update.callback_query:
@@ -215,6 +214,7 @@ async def shared_additional_menu(update: Update, context: ContextTypes.DEFAULT_T
             additional_buttons.append([KeyboardButton("🗂 Архівувати альбом")])
         if access_level == 'owner':
             additional_buttons.append([KeyboardButton("🗑 Видалити альбом")])
+            additional_buttons.append([KeyboardButton("📷 Перенести до моїх альбомів")])
         
         additional_buttons.append([KeyboardButton("◀️ Назад до альбому")])
         
@@ -240,6 +240,41 @@ async def shared_additional_menu(update: Update, context: ContextTypes.DEFAULT_T
             return True
         elif text == "🗑 Видалити альбом" and access_level == 'owner':
             await shared_delete_confirm(update, context, album_id)
+            return True
+        elif text == "📷 Перенести до моїх альбомів" and access_level == 'owner':
+            ok, reason = db.make_album_personal_if_solo(album_id, update.effective_user.id)
+            if ok:
+                # Закриваємо спільний режим і повертаємось до списку спільних (альбом зникне звідти)
+                context.user_data['shared_album_active'] = False
+                context.user_data.pop('current_shared_album', None)
+                context.user_data.pop('shared_access_level', None)
+                context.user_data.pop('shared_in_additional', None)
+                context.user_data.pop('shared_in_delete_menu', None)
+                context.user_data.pop('shared_delete_album_id', None)
+
+                await update.message.reply_text(
+                    "✅ Альбом перенесено до **моїх альбомів**.",
+                    reply_markup=ReplyKeyboardRemove(),
+                    parse_mode='Markdown'
+                )
+                from main import show_my_albums
+                await show_my_albums(update, context)
+                return True
+
+            if reason == "has_members":
+                await update.message.reply_text(
+                    "❌ Вибачте, але перенести альбом не можна, бо в ньому є ще учасники.\n"
+                    "Спочатку видаліть їх і повторіть дію."
+                )
+                return True
+            if reason == "not_owner":
+                await update.message.reply_text("❌ Тільки власник може перенести альбом до звичайних.")
+                return True
+            if reason == "not_found":
+                await update.message.reply_text("❌ Альбом не знайдено.")
+                return True
+
+            await update.message.reply_text("❌ Не вдалося перенести альбом (помилка бази даних).")
             return True
         elif context.user_data.get('shared_in_additional'):
         # ПЕРЕВІР ТУТ НАЗВУ КНОПКИ
@@ -659,7 +694,8 @@ async def shared_handle_role_text_input(update: Update, context: ContextTypes.DE
         "👥 Учасники", "ℹ️ Інформація", "🗑 Видалити файл", 
         "🗂 Архівувати альбом", "🗑 Видалити альбом", 
         "◀️ Назад до альбому", "◀️ Назад до додаткових опцій",
-        "📤 Надіслати весь альбом", "◀️ Вийти з альбому"
+        "📤 Надіслати весь альбом", "📷 Перенести до моїх альбомів",
+        "◀️ Вийти з альбому"
     ]
     
     # Якщо текст — це кнопка або починається зі стрілки
@@ -946,6 +982,7 @@ async def shared_handle_members_navigation(update: Update, context: ContextTypes
         
         if access_level == 'owner':
             additional_buttons.append([KeyboardButton("🗑 Видалити альбом")])
+            additional_buttons.append([KeyboardButton("📷 Перенести до моїх альбомів")])
         
         additional_buttons.append([KeyboardButton("◀️ Назад до альбому")])
         
@@ -1000,6 +1037,7 @@ async def shared_handle_all_buttons(update: Update, context: ContextTypes.DEFAUL
             additional_buttons.append([KeyboardButton("🗂 Архівувати альбом")])
         if access_level == 'owner':
             additional_buttons.append([KeyboardButton("🗑 Видалити альбом")])
+            additional_buttons.append([KeyboardButton("📷 Перенести до моїх альбомів")])
         additional_buttons.append([KeyboardButton("◀️ Назад до альбому")])
         
         await update.message.reply_text(
@@ -1051,6 +1089,45 @@ async def shared_handle_all_buttons(update: Update, context: ContextTypes.DEFAUL
             return True
         elif text == "🗑 Видалити альбом":
             await shared_delete_confirm(update, context, album_id)
+            return True
+        elif text == "📷 Перенести до моїх альбомів":
+            access_level = ud.get('shared_access_level')
+            if access_level != 'owner':
+                await update.message.reply_text("❌ Тільки власник може перенести альбом до звичайних.")
+                return True
+
+            ok, reason = db.make_album_personal_if_solo(album_id, update.effective_user.id)
+            if ok:
+                ud['shared_album_active'] = False
+                ud.pop('current_shared_album', None)
+                ud.pop('shared_access_level', None)
+                ud.pop('shared_in_additional', None)
+                ud.pop('shared_in_delete_menu', None)
+                ud.pop('shared_delete_album_id', None)
+
+                await update.message.reply_text(
+                    "✅ Альбом перенесено до **моїх альбомів**.",
+                    reply_markup=ReplyKeyboardRemove(),
+                    parse_mode='Markdown'
+                )
+                from main import show_my_albums
+                await show_my_albums(update, context)
+                return True
+
+            if reason == "has_members":
+                await update.message.reply_text(
+                    "❌ Вибачте, але перенести альбом не можна, бо в ньому є ще учасники.\n"
+                    "Спочатку видаліть їх і повторіть дію."
+                )
+                return True
+            if reason == "not_owner":
+                await update.message.reply_text("❌ Тільки власник може перенести альбом до звичайних.")
+                return True
+            if reason == "not_found":
+                await update.message.reply_text("❌ Альбом не знайдено.")
+                return True
+
+            await update.message.reply_text("❌ Не вдалося перенести альбом (помилка бази даних).")
             return True
     
     return False
