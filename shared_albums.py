@@ -225,8 +225,6 @@ async def shared_additional_menu(update: Update, context: ContextTypes.DEFAULT_T
         )
         return True
     
-    # ... решта коду (elif shared_in_additional ...)
-    
     elif context.user_data.get('shared_in_additional'):
         if text == "👥 Учасники":
             await shared_members_main(update, context, album_id, access_level)
@@ -235,7 +233,7 @@ async def shared_additional_menu(update: Update, context: ContextTypes.DEFAULT_T
             await shared_album_info(update, context, album_id)
             return True
         elif text == "🗑 Видалити файл" and access_level in ['owner', 'admin', 'editor', 'contributor']:
-            await shared_delete_file_menu(update, context, album_id)
+            await shared_start_delete_menu (update, context, album_id)
             return True
         elif text == "🗂 Архівувати альбом" and access_level in ['owner', 'admin']:
             await shared_archive_confirm(update, context, album_id)
@@ -250,6 +248,192 @@ async def shared_additional_menu(update: Update, context: ContextTypes.DEFAULT_T
                 await shared_return_to_album(update, context, album_id)
                 return True
     
+    return False
+
+async def handle_shared_delete_choices(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Вибір режиму видалення в меню спільного альбому"""
+    text = update.message.text
+    ud = context.user_data
+    album_id = ud.get('shared_delete_album_id')
+    
+    if not ud.get('shared_in_delete_menu') or not album_id:
+        return False
+
+    if text == "Видалити: Весь альбом":
+        files = db.get_album_files(album_id)
+        await update.message.reply_text(f"📤 Надсилаю {len(files)} файлів для видалення...")
+        for idx, file in enumerate(files, 1):
+            # Перетворюємо sqlite3.Row у словник
+            file_dict = dict(file)
+            await send_shared_file_for_deletion(update, context, file_dict, index=idx)
+        return True
+
+    elif text == "Видалити: Останні":
+        ud['shared_del_awaiting_recent'] = True
+        await update.message.reply_text("⏳ Скільки останніх файлів надіслати для видалення?")
+        return True
+
+    elif text == "Видалити: Перші":
+        ud['shared_del_awaiting_first'] = True
+        await update.message.reply_text("⏮ Скільки перших файлів надіслати для видалення?")
+        return True
+
+    elif text == "Видалити: Проміжок":
+        ud['shared_del_awaiting_range'] = True
+        await update.message.reply_text("🔢 Введіть проміжок для видалення (наприклад: 1-10):")
+        return True
+
+    elif text == "Видалити: За датою":
+        ud['shared_del_awaiting_date'] = True
+        await update.message.reply_text("📅 Введіть дату (РРРР-ММ-ДД):")
+        return True
+
+    return False
+
+async def shared_handle_del_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обробник цифрового вводу для видалення в спільному альбомі"""
+    ud = context.user_data
+    text = update.message.text
+    album_id = ud.get('shared_delete_album_id')
+    
+    if not album_id: 
+        return False
+        
+    all_files = db.get_album_files(album_id)
+    # Перетворюємо в список словників
+    all_files = [dict(f) for f in all_files]
+
+    try:
+        # 1. Останні
+        if ud.get('shared_del_awaiting_recent'):
+            count = int(text)
+            selected = list(enumerate(all_files, 1))[-count:]
+            await update.message.reply_text(f"📤 Надсилаю останні {len(selected)} файлів...")
+            for idx, f in selected: 
+                await send_shared_file_for_deletion(update, context, f, idx)
+            ud['shared_del_awaiting_recent'] = False
+            return True
+
+        # 2. Перші
+        if ud.get('shared_del_awaiting_first'):
+            count = int(text)
+            selected = list(enumerate(all_files, 1))[:count]
+            await update.message.reply_text(f"📤 Надсилаю перші {len(selected)} файлів...")
+            for idx, f in selected: 
+                await send_shared_file_for_deletion(update, context, f, idx)
+            ud['shared_del_awaiting_first'] = False
+            return True
+
+        # 3. Проміжок
+        if ud.get('shared_del_awaiting_range'):
+            start, end = map(int, text.split('-'))
+            selected = all_files[start-1:end]
+            await update.message.reply_text(f"📤 Надсилаю файли з {start} по {end}...")
+            for i, f in enumerate(selected): 
+                await send_shared_file_for_deletion(update, context, f, start+i)
+            ud['shared_del_awaiting_range'] = False
+            return True
+            
+    except Exception as e:
+        await update.message.reply_text(f"❌ Помилка формату: {e}")
+        return True
+
+    return False
+
+async def shared_handle_del_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обробник цифрового вводу для видалення"""
+    ud = context.user_data
+    text = update.message.text
+    album_id = ud.get('shared_delete_album_id')
+    
+    print(f"🔍 [shared_handle_del_inputs] text={text}, album_id={album_id}")
+    
+    if not album_id: 
+        return False
+        
+    all_files = db.get_album_files(album_id)
+    print(f"🔍 Всього файлів в альбомі: {len(all_files)}")
+
+    try:
+        # 1. Останні
+        if ud.get('shared_del_awaiting_recent'):
+            count = int(text)
+            print(f"🔍 Вибрано останні {count} файлів")
+            selected = list(enumerate(all_files, 1))[-count:]
+            await update.message.reply_text(f"📤 Надсилаю останні {len(selected)} файлів...")
+            for idx, f in selected: 
+                await send_shared_file_for_deletion(update, context, f, idx)
+            ud['shared_del_awaiting_recent'] = False
+            return True
+
+        # 2. Перші
+        if ud.get('shared_del_awaiting_first'):
+            count = int(text)
+            print(f"🔍 Вибрано перші {count} файлів")
+            selected = list(enumerate(all_files, 1))[:count]
+            await update.message.reply_text(f"📤 Надсилаю перші {len(selected)} файлів...")
+            for idx, f in selected: 
+                await send_shared_file_for_deletion(update, context, f, idx)
+            ud['shared_del_awaiting_first'] = False
+            return True
+
+        # 3. Проміжок
+        if ud.get('shared_del_awaiting_range'):
+            start, end = map(int, text.split('-'))
+            print(f"🔍 Вибрано проміжок {start}-{end}")
+            selected = all_files[start-1:end]
+            await update.message.reply_text(f"📤 Надсилаю файли з {start} по {end}...")
+            for i, f in enumerate(selected): 
+                await send_shared_file_for_deletion(update, context, f, start+i)
+            ud['shared_del_awaiting_range'] = False
+            return True
+            
+    except Exception as e:
+        print(f"❌ Помилка формату: {e}")
+        await update.message.reply_text(f"❌ Помилка формату: {e}")
+        return True
+
+    return False
+
+
+async def shared_handle_del_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обробник цифрового вводу для видалення (ТОЙ САМИЙ, ЯКИЙ НЕ ЗНАХОДИТЬ PYTHON)"""
+    ud = context.user_data
+    text = update.message.text
+    album_id = ud.get('shared_delete_album_id')
+    
+    if not album_id: return False
+    all_files = db.get_album_files(album_id)
+
+    try:
+        # 1. Останні
+        if ud.get('shared_del_awaiting_recent'):
+            count = int(text)
+            selected = list(enumerate(all_files, 1))[-count:]
+            for idx, f in selected: await send_shared_file_for_deletion(update, context, f, idx)
+            ud['shared_del_awaiting_recent'] = False
+            return True
+
+        # 2. Перші
+        if ud.get('shared_del_awaiting_first'):
+            count = int(text)
+            selected = list(enumerate(all_files, 1))[:count]
+            for idx, f in selected: await send_shared_file_for_deletion(update, context, f, idx)
+            ud['shared_del_awaiting_first'] = False
+            return True
+
+        # 3. Проміжок
+        if ud.get('shared_del_awaiting_range'):
+            start, end = map(int, text.split('-'))
+            selected = all_files[start-1:end]
+            for i, f in enumerate(selected): await send_shared_file_for_deletion(update, context, f, start+i)
+            ud['shared_del_awaiting_range'] = False
+            return True
+            
+    except Exception as e:
+        await update.message.reply_text(f"❌ Помилка формату: {e}")
+        return True
+
     return False
 
 # ========== ПОВЕРНЕННЯ ДО АЛЬБОМУ ==========
@@ -816,16 +1000,350 @@ async def shared_handle_members_navigation(update: Update, context: ContextTypes
 
     return False
 
+async def shared_handle_all_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Універсальний обробник для всіх кнопок спільного альбому"""
+    text = update.message.text
+    ud = context.user_data
+    
+    if not ud.get('shared_album_active'):
+        return False
+    
+    album_id = ud.get('current_shared_album')
+    
+    print(f"🔵 [shared_handle_all_buttons] Обробка: '{text}'")
+    print(f"🔵 Стан: in_delete_menu={ud.get('shared_in_delete_menu')}")
+    
+    # --- 1. СПЕЦІАЛЬНІ РЕЖИМИ (ВВІД ЧИСЕЛ/ДАТ) ---
+    if ud.get('shared_awaiting_recent_count') or ud.get('shared_awaiting_first_count') or \
+       ud.get('shared_awaiting_range') or ud.get('shared_awaiting_date'):
+        # Ці обробники вже є окремо
+        return False
+    
+    # --- 2. КНОПКИ НАВІГАЦІЇ ТА МЕНЮ (НАЙВИЩИЙ ПРІОРИТЕТ) ---
+    if text == "◀️ Назад до альбому":
+        ud['shared_in_delete_menu'] = False
+        ud['shared_in_additional'] = False
+        await shared_return_to_album(update, context, album_id)
+        return True
+        
+    if text == "◀️ Назад до додаткових опцій":
+        ud['shared_in_delete_menu'] = False
+        ud['shared_in_additional'] = True
+        # Показуємо додаткове меню
+        access_level = ud.get('shared_access_level')
+        additional_buttons = [
+            [KeyboardButton("👥 Учасники")],
+            [KeyboardButton("ℹ️ Інформація")],
+        ]
+        if access_level in ['owner', 'admin', 'editor', 'contributor']:
+            additional_buttons.append([KeyboardButton("🗑 Видалити файл")])
+        if access_level in ['owner', 'admin']:
+            additional_buttons.append([KeyboardButton("🗂 Архівувати альбом")])
+        if access_level == 'owner':
+            additional_buttons.append([KeyboardButton("🗑 Видалити альбом")])
+        additional_buttons.append([KeyboardButton("◀️ Назад до альбому")])
+        
+        await update.message.reply_text(
+            f"📋 **Додаткові опції**\n\nОберіть потрібну дію:",
+            reply_markup=ReplyKeyboardMarkup(additional_buttons, resize_keyboard=True),
+            parse_mode='Markdown'
+        )
+        return True
+    
+    if text == "◀️ Вийти з альбому":
+        return await shared_exit_album(update, context)
+    
+    # --- 3. КНОПКИ МЕНЮ ВИДАЛЕННЯ ---
+    if text.startswith("Видалити:"):
+        if await handle_shared_delete_choices(update, context):
+            return True
+    
+    # --- 4. ІНШІ КНОПКИ (ОСНОВНІ ТА ДОДАТКОВІ) ---
+    # Якщо ми в меню видалення - ігноруємо інші кнопки
+    if ud.get('shared_in_delete_menu'):
+        if text in ["📤 Надіслати весь альбом", "⏳ Надіслати останні", "⏮ Надіслати перші", 
+                    "🔢 Надіслати проміжок", "📅 Надіслати за датою", "⋯ Додаткові опції"]:
+            await update.message.reply_text("⚠️ Спочатку вийдіть з меню видалення (натисніть '◀️ Назад до альбому')")
+            return True
+        return False
+    
+    # --- 5. ОСНОВНІ КНОПКИ АЛЬБОМУ ---
+    if "Надіслати весь альбом" in text:
+        return await shared_send_all(update, context, album_id)
+    elif "Надіслати останні" in text:
+        return await shared_send_recent_start(update, context, album_id)
+    elif "Надіслати перші" in text:
+        return await shared_send_first_start(update, context, album_id)
+    elif "Надіслати проміжок" in text:
+        return await shared_send_range_start(update, context, album_id)
+    elif "Надіслати за датою" in text:
+        return await shared_send_by_date_start(update, context, album_id)
+    elif "⋯ Додаткові опції" in text:
+        ud['shared_in_additional'] = True
+        return await shared_additional_menu(update, context)
+    
+    # --- 6. ДОДАТКОВЕ МЕНЮ ---
+    if ud.get('shared_in_additional'):
+        if text == "👥 Учасники":
+            await shared_members_main(update, context, album_id, ud.get('shared_access_level'))
+            return True
+        elif text == "ℹ️ Інформація":
+            await shared_album_info(update, context, album_id)
+            return True
+        elif text == "🗑 Видалити файл":
+            await shared_start_delete_menu(update, context, album_id)
+            return True
+        elif text == "🗂 Архівувати альбом":
+            await shared_archive_confirm(update, context, album_id)
+            return True
+        elif text == "🗑 Видалити альбом":
+            await shared_delete_confirm(update, context, album_id)
+            return True
+    
+    return False
+
 # ========== ВИДАЛЕННЯ ФАЙЛУ ==========
 
-async def shared_delete_file_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, album_id):
-    """Меню видалення файлів"""
-    await update.message.reply_text(
-        "🗑 **Видалення файлів**\n\nФункція в розробці",
-        reply_markup=ReplyKeyboardMarkup([
-            [KeyboardButton("◀️ Назад до додаткових опцій")]
-        ], resize_keyboard=True)
+async def shared_start_delete_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, album_id):
+    """Запуск меню видалення файлів для спільного альбому з префіксом 'Видалити:'"""
+    files = db.get_album_files(album_id)
+    total_files = len(files)
+    
+    text = (
+        f"🗑 **Меню видалення файлів (Спільний альбом)**\n\n"
+        f"Оберіть, які файли надіслати для видалення (біля кожного файлу буде кнопка 🗑):\n"
+        f"Всього в альбомі: {total_files}"
     )
+    
+    # Використовуємо префікс "Видалити:", щоб відрізнити від звичайного меню
+    delete_keyboard = ReplyKeyboardMarkup([
+        [KeyboardButton("Видалити: Весь альбом")],
+        [KeyboardButton("Видалити: Останні"), KeyboardButton("Видалити: Перші")],
+        [KeyboardButton("Видалити: Проміжок")],
+        [KeyboardButton("Видалити: За датою")],
+        [KeyboardButton("◀️ Назад до альбому")]
+    ], resize_keyboard=True)
+    
+    context.user_data['shared_in_delete_menu'] = True
+    context.user_data['shared_delete_album_id'] = album_id
+    # Вимикаємо стани звичайного перегляду, щоб не заважали
+    context.user_data['shared_awaiting_recent_count'] = False
+    context.user_data['shared_awaiting_first_count'] = False
+    context.user_data['shared_awaiting_range'] = False
+    context.user_data['shared_awaiting_date'] = False
+    
+    await update.message.reply_text(
+        text,
+        reply_markup=delete_keyboard,
+        parse_mode='Markdown'
+    )
+
+    # Якщо файлів мало, одразу надішлемо їх для видалення
+    if total_files > 0 and total_files <= 10:
+        print(f"🔍 Надсилаю {total_files} файлів для видалення...")
+        for idx, file in enumerate(files, 1):
+            # Перетворюємо sqlite3.Row у словник
+            file_dict = dict(file)
+            print(f"🔍 Надсилаю файл #{idx}: {file_dict.get('telegram_file_id')}")
+            await send_shared_file_for_deletion(update, context, file_dict, index=idx)
+    elif total_files > 10:
+        await update.message.reply_text(f"ℹ️ В альбомі {total_files} файлів. Оберіть опцію вище, щоб надіслати частину файлів.")
+
+async def handle_shared_delete_choices(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Вибір режиму видалення в меню спільного альбому"""
+    text = update.message.text
+    ud = context.user_data
+    album_id = ud.get('shared_delete_album_id')
+    
+    if not ud.get('shared_in_delete_menu') or not album_id:
+        return False
+
+    if text == "Видалити: Весь альбом":
+        files = db.get_album_files(album_id)
+        await update.message.reply_text(f"📤 Надсилаю {len(files)} файлів для видалення...")
+        for idx, file in enumerate(files, 1):
+            # Перетворюємо sqlite3.Row у словник
+            file_dict = dict(file)
+            await send_shared_file_for_deletion(update, context, file_dict, index=idx)
+        return True
+
+    elif text == "Видалити: Останні":
+        ud['shared_del_awaiting_recent'] = True
+        await update.message.reply_text("⏳ Скільки останніх файлів надіслати для видалення?")
+        return True
+
+    elif text == "Видалити: Перші":
+        ud['shared_del_awaiting_first'] = True
+        await update.message.reply_text("⏮ Скільки перших файлів надіслати для видалення?")
+        return True
+
+    elif text == "Видалити: Проміжок":
+        ud['shared_del_awaiting_range'] = True
+        await update.message.reply_text("🔢 Введіть проміжок для видалення (наприклад: 1-10):")
+        return True
+
+    elif text == "Видалити: За датою":
+        ud['shared_del_awaiting_date'] = True
+        await update.message.reply_text("📅 Введіть дату (РРРР-ММ-ДД):")
+        return True
+
+    return False
+
+async def shared_handle_del_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обробник цифрового вводу для видалення в спільному альбомі"""
+    ud = context.user_data
+    text = update.message.text
+    album_id = ud.get('shared_delete_album_id')
+    
+    if not album_id: 
+        return False
+        
+    all_files = db.get_album_files(album_id)
+    # Перетворюємо в список словників
+    all_files = [dict(f) for f in all_files]
+
+    try:
+        # 1. Останні
+        if ud.get('shared_del_awaiting_recent'):
+            count = int(text)
+            selected = list(enumerate(all_files, 1))[-count:]
+            await update.message.reply_text(f"📤 Надсилаю останні {len(selected)} файлів...")
+            for idx, f in selected: 
+                await send_shared_file_for_deletion(update, context, f, idx)
+            ud['shared_del_awaiting_recent'] = False
+            return True
+
+        # 2. Перші
+        if ud.get('shared_del_awaiting_first'):
+            count = int(text)
+            selected = list(enumerate(all_files, 1))[:count]
+            await update.message.reply_text(f"📤 Надсилаю перші {len(selected)} файлів...")
+            for idx, f in selected: 
+                await send_shared_file_for_deletion(update, context, f, idx)
+            ud['shared_del_awaiting_first'] = False
+            return True
+
+        # 3. Проміжок
+        if ud.get('shared_del_awaiting_range'):
+            start, end = map(int, text.split('-'))
+            if start < 1 or end > len(all_files) or start > end:
+                await update.message.reply_text(f"❌ Невірний проміжок. Всього файлів: {len(all_files)}")
+                return True
+            selected = all_files[start-1:end]
+            await update.message.reply_text(f"📤 Надсилаю файли з {start} по {end}...")
+            for i, f in enumerate(selected): 
+                await send_shared_file_for_deletion(update, context, f, start+i)
+            ud['shared_del_awaiting_range'] = False
+            return True
+            
+    except ValueError:
+        await update.message.reply_text("❌ Введіть число або проміжок у правильному форматі")
+        return True
+    except Exception as e:
+        await update.message.reply_text(f"❌ Помилка: {e}")
+        return True
+
+    return False
+
+async def send_shared_file_for_deletion(update: Update, context: ContextTypes.DEFAULT_TYPE, file_data, index=None):
+    """Надсилає файл з кнопкою для видалення"""
+    print(f"🔍 [send_shared_file_for_deletion] Початок для файлу #{index}")
+    
+    # Переконуємося, що file_data - це словник
+    try:
+        if not isinstance(file_data, dict):
+            f = dict(file_data)
+        else:
+            f = file_data
+        print(f"🔍 Дані файлу: {f}")
+    except Exception as e:
+        print(f"❌ Помилка перетворення file_data: {e}")
+        return
+    
+    # Використовуємо правильні назви полів з бази даних
+    file_id_db = f.get('file_id')
+    file_id = f.get('telegram_file_id')
+    file_type = f.get('file_type')
+    album_id = f.get('album_id')
+    
+    print(f"🔍 file_id_db={file_id_db}, file_id={file_id}, file_type={file_type}, album_id={album_id}")
+    
+    if not file_id:
+        print(f"❌ Немає telegram_file_id для файлу #{index}")
+        await update.message.reply_text(f"❌ Помилка: файл #{index} не має telegram_file_id")
+        return
+    
+    if not file_id_db:
+        print(f"❌ Немає file_id в базі даних для файлу #{index}")
+        await update.message.reply_text(f"❌ Помилка: файл #{index} не має ID в базі даних")
+        return
+
+    # Створюємо кнопку для підтвердження видалення
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton(
+            f"🗑 Видалити №{index}", 
+            callback_data=f"shared_confirm_delete_{file_id_db}_{album_id}"
+        )
+    ]])
+
+    try:
+        if file_type == 'photo':
+            await update.message.reply_photo(photo=file_id, reply_markup=keyboard)
+            print(f"✅ Фото #{index} надіслано")
+        elif file_type == 'video':
+            await update.message.reply_video(video=file_id, reply_markup=keyboard)
+            print(f"✅ Відео #{index} надіслано")
+        elif file_type == 'document':
+            await update.message.reply_document(document=file_id, reply_markup=keyboard)
+            print(f"✅ Документ #{index} надіслано")
+        elif file_type == 'circle':
+            await update.message.reply_video_note(video_note=file_id, reply_markup=keyboard)
+            print(f"✅ Кружечок #{index} надіслано")
+        else:
+            print(f"❌ Невідомий тип файлу: {file_type}")
+            await update.message.reply_text(f"❌ Файл #{index} має невідомий тип: {file_type}")
+    except Exception as e:
+        print(f"❌ Помилка надсилання файлу #{index}: {e}")
+        await update.message.reply_text(f"❌ Помилка надсилання файлу #{index}: {e}")
+
+async def handle_shared_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обробник підтвердження видалення файлу зі спільного альбому"""
+    query = update.callback_query
+    await query.answer()
+    
+    # Формат: shared_confirm_delete_{file_id_db}_{album_id}
+    parts = query.data.split('_')
+    file_id_db = int(parts[3])  # Тут буде file_id з бази даних
+    album_id = int(parts[4])
+    
+    try:
+        # Видаляємо файл з бази даних - використовуємо file_id як ключ
+        db.cursor.execute("DELETE FROM files WHERE file_id = ?", (file_id_db,))
+        db.conn.commit()
+        
+        # Оновлюємо лічильник файлів в альбомі
+        db.cursor.execute("""
+            UPDATE albums 
+            SET files_count = (SELECT COUNT(*) FROM files WHERE album_id = ?)
+            WHERE album_id = ?
+        """, (album_id, album_id))
+        db.conn.commit()
+        
+        await query.edit_message_text("✅ Файл успішно видалено!")
+        
+        # Перевіряємо, чи потрібно оновити меню видалення
+        if context.user_data.get('shared_in_delete_menu'):
+            # Можна запропонувати оновити список
+            await query.message.reply_text(
+                "🔄 Натисніть 'Видалити: Весь альбом' щоб побачити оновлений список файлів",
+                reply_markup=ReplyKeyboardMarkup([
+                    [KeyboardButton("Видалити: Весь альбом")],
+                    [KeyboardButton("◀️ Назад до альбому")]
+                ], resize_keyboard=True)
+            )
+    except Exception as e:
+        print(f"❌ Помилка видалення файлу: {e}")
+        await query.edit_message_text(f"❌ Помилка видалення файлу: {e}")
 
 # ========== АРХІВАЦІЯ АЛЬБОМУ ==========
 
@@ -922,11 +1440,19 @@ async def shared_handle_delete_confirmation(update: Update, context: ContextType
         context.user_data.pop('shared_album_name_to_delete', None)
         context.user_data['shared_album_active'] = False
         context.user_data.pop('current_shared_album', None)
+        context.user_data.pop('shared_access_level', None)
+        context.user_data.pop('shared_in_additional', None)
+        context.user_data.pop('shared_in_members_main', None)
+        context.user_data.pop('shared_in_role_selection', None)
+        context.user_data.pop('shared_selecting_member_for_removal', None)
+        context.user_data.pop('shared_changing_role_for', None)
+        context.user_data.pop('shared_removing_member', None)
         
         await update.message.reply_text(
             f"✅ Альбом '{correct_name}' успішно видалено!",
-            reply_markup=MAIN_MENU
+            reply_markup=ReplyKeyboardRemove()
         )
+        await shared_albums_main(update, context)
         return True
     else:
         await update.message.reply_text("❌ Назва не співпадає. Спробуйте ще раз:")
@@ -1355,6 +1881,11 @@ async def shared_handle_main_buttons(update: Update, context: ContextTypes.DEFAU
     
     text = update.message.text
     album_id = context.user_data.get("current_shared_album")
+    
+    # ВАЖЛИВО: Спочатку перевіряємо кнопки видалення, щоб вони не блокувалися
+    if text.startswith("Видалити:"):
+        print(f"🔵 Це кнопка видалення: {text}, повертаємо False, щоб піти далі в інші обробники")
+        return False  # Повертаємо False, щоб текст пішов далі в інші обробники
     
     if "Надіслати весь альбом" in text:
         return await shared_send_all(update, context, album_id)

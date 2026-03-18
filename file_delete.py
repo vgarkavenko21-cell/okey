@@ -6,24 +6,55 @@ import helpers
 db = Database()
 
 # ========== ОБРОБНИК КНОПОК МЕНЮ ВИДАЛЕННЯ ==========
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+async def send_file_for_deletion(update: Update, context: ContextTypes.DEFAULT_TYPE, file_data, index=None):
+    """Надсилає файл з кнопкою, яка запитує підтвердження (для звичайних альбомів)"""
+    try:
+        f = dict(file_data)
+    except:
+        f = file_data
+
+    # Отримуємо ID (використовуємо .get для безпеки)
+    f_id_db = f.get('id') or f.get('file_id')
+    file_id = f.get('telegram_file_id')
+    file_type = f.get('file_type')
+    album_id = f.get('album_id')
+
+    if not f_id_db or not file_id:
+        return
+
+    # Кнопка веде на підтвердження (префікс ask_del_)
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton(
+            f"🗑 Видалити №{index if index else ''}", 
+            callback_data=f"ask_del_{f_id_db}_{album_id}"
+        )
+    ]])
+
+    try:
+        if file_type == 'photo':
+            await update.message.reply_photo(photo=file_id, reply_markup=keyboard)
+        elif file_type == 'video':
+            await update.message.reply_video(video=file_id, reply_markup=keyboard)
+        elif file_type == 'document':
+            await update.message.reply_document(document=file_id, reply_markup=keyboard)
+    except Exception as e:
+        print(f"❌ Помилка надсилання файлу: {e}")
+
 
 # Повна заміна функції у Файлі 2
-async def handle_delete_menu_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE, text, album_id):
-    """Обробка кнопок видалення з префіксом 'Надіслати:'"""
-    
+async def handle_delete_menu_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, album_id: int):
+    """Обробка кнопок меню видалення"""
     if text == "Надіслати: Весь альбом":
         files = db.get_album_files(album_id)
-        if not files:
-            await update.message.reply_text("📭 В альбомі немає файлів.")
-            return True
-        await update.message.reply_text(f"🗑 Надсилаю всі {len(files)} файлів з кнопкою видалення:")
-        for index, file in enumerate(files, 1):
-            await delete_send_file_with_button(update, context, file, index)
+        await update.message.reply_text(f"📤 Надсилаю всі файли ({len(files)}) для видалення...")
+        for idx, file in enumerate(files, 1):
+            await send_file_for_deletion(update, context, file, index=idx)
         return True
     
     elif text == "Надіслати: Останні":
-        context.user_data['delete_action'] = 'recent'
-        context.user_data['awaiting_delete_input'] = True
+        context.user_data['delete_awaiting_recent'] = True
         await update.message.reply_text("⏳ Скільки останніх файлів надіслати для видалення?")
         return True
     
@@ -46,35 +77,69 @@ async def handle_delete_menu_buttons(update: Update, context: ContextTypes.DEFAU
         return True
     
     elif text == "◀️ Назад до альбому":
-        return "back_to_album"
-    
-    return False
+            # 1. Вимикаємо ВСІ стани (додаткове меню, видалення тощо)
+            states_to_reset = [
+                'in_additional_menu', 'in_delete_menu', 'shared_in_delete_menu',
+                'delete_awaiting_recent', 'delete_awaiting_first', 'delete_awaiting_range'
+            ]
+            for state in states_to_reset:
+                ud.pop(state, None)
+
+            # 2. ДІСТАЄМО ID АЛЬБОМУ (важливо!)
+            # Ми пробуємо взяти його з різних місць, де він міг бути збережений
+            album_id = ud.get('current_album') or ud.get('delete_menu_album') or ud.get('shared_delete_album_id')
+            
+            if album_id:
+                # Повертаємо клавіатуру альбому
+                await return_to_album_keyboard(update, context, album_id)
+            else:
+                # Якщо ID зовсім немає, просто шлемо повідомлення (про всяк випадок)
+                await update.message.reply_text("🔙 Повернення до альбому...")
+            
+            return True
 
 # ========== УНІВЕРСАЛЬНИЙ ОБРОБНИК ТЕКСТУ ==========
 
 async def handle_delete_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Універсальний обробник текстових повідомлень для видалення"""
+    # 1. ВИЗНАЧАЄМО ЗМІННУ text (це виправить NameError)
+    text = update.message.text
+    if not text:
+        return False
+
+    ud = context.user_data
     
+    # 2. Перехоплюємо кнопки навігації ПЕРШИМИ
+    # Якщо це кнопка "Назад" або "Скасувати" — повертаємо False, 
+    # щоб спрацював основний маршрутизатор у main.py (Group 2)
+    if text.startswith("◀️") or text == "❌ Скасувати" or text == "🗑 Видалити альбом":
+        return False
+    if text.startswith("◀️") or text == "❌ Скасувати":
+        print(f"🔄 Навігація: пропускаємо '{text}' до головного обробника")
+        return False
+
     # Якщо активний спільний альбом - пропускаємо
-    if context.user_data.get('shared_album_active'):
+    if ud.get('shared_album_active'):
         return False
     
-    print(f"🔍 handle_delete_text: text='{update.message.text}'")
-    print(f"📊 in_delete_menu={context.user_data.get('in_delete_menu')}, delete_action={context.user_data.get('delete_action')}")
+    print(f"🔍 handle_delete_text: text='{text}'")
+    print(f"📊 in_delete_menu={ud.get('in_delete_menu')}, delete_action={ud.get('delete_action')}")
     
     # Якщо не в режимі видалення - пропускаємо
-    if not context.user_data.get('in_delete_menu'):
+    if not ud.get('in_delete_menu'):
         print("❌ Не в режимі видалення")
         return False
     
-    # Якщо немає активної дії - пропускаємо
-    if not context.user_data.get('delete_action'):
+    # Отримуємо поточну дію (recent, first, range, date)
+    action = ud.get('delete_action')
+    
+    if not action:
         print("❌ Немає активної дії")
         return False
     
-    action = context.user_data.get('delete_action')
-    print(f"✅ Обробляємо дію: {action} з текстом: {update.message.text}")
+    print(f"✅ Обробляємо дію: {action} з текстом: {text}")
     
+    # Викликаємо відповідний обробник залежно від дії
     if action == 'recent':
         return await delete_handle_recent_input(update, context)
     elif action == 'first':
