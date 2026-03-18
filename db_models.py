@@ -139,6 +139,83 @@ class Database:
         query += " ORDER BY created_at DESC"
         
         return self.cursor.execute(query, (user_id,)).fetchall()
+
+    def make_album_shared(self, album_id: int, owner_id: int):
+        """Перетворити особистий альбом на спільний (власник додається автоматично)"""
+        try:
+            album_id = int(album_id)
+            owner_id = int(owner_id)
+
+            album = self.cursor.execute(
+                "SELECT album_id, user_id, is_shared FROM albums WHERE album_id = ?",
+                (album_id,)
+            ).fetchone()
+
+            if not album:
+                return False, "not_found"
+            if int(album["user_id"]) != owner_id:
+                return False, "not_owner"
+
+            # Якщо вже спільний — просто гарантуємо запис власника в shared_albums
+            self.cursor.execute(
+                "UPDATE albums SET is_shared = 1 WHERE album_id = ?",
+                (album_id,)
+            )
+            self.cursor.execute(
+                """
+                INSERT OR IGNORE INTO shared_albums (album_id, user_id, access_level, added_at)
+                VALUES (?, ?, 'owner', CURRENT_TIMESTAMP)
+                """,
+                (album_id, owner_id)
+            )
+            self.conn.commit()
+            return True, "ok"
+        except Exception as e:
+            print(f"❌ Помилка make_album_shared({album_id}): {e}")
+            self.conn.rollback()
+            return False, "db_error"
+
+    def make_album_personal_if_solo(self, album_id: int, user_id: int):
+        """Перенести спільний альбом у звичайні, якщо учасник лише один (цей user_id)"""
+        try:
+            album_id = int(album_id)
+            user_id = int(user_id)
+
+            album = self.cursor.execute(
+                "SELECT album_id, user_id, is_shared FROM albums WHERE album_id = ?",
+                (album_id,)
+            ).fetchone()
+            if not album:
+                return False, "not_found"
+
+            # Перевіряємо учасників
+            members = self.cursor.execute(
+                "SELECT user_id, access_level FROM shared_albums WHERE album_id = ?",
+                (album_id,)
+            ).fetchall()
+
+            if not members:
+                # Нема записів — просто робимо альбом не-спільним
+                self.cursor.execute("UPDATE albums SET is_shared = 0 WHERE album_id = ?", (album_id,))
+                self.conn.commit()
+                return True, "ok"
+
+            if len(members) != 1 or int(members[0]["user_id"]) != user_id:
+                return False, "has_members"
+
+            # Додаткова перевірка: тільки owner може переносити
+            if members[0]["access_level"] != "owner":
+                return False, "not_owner"
+
+            # Переносимо: вимикаємо shared і чистимо таблицю учасників
+            self.cursor.execute("UPDATE albums SET is_shared = 0 WHERE album_id = ?", (album_id,))
+            self.cursor.execute("DELETE FROM shared_albums WHERE album_id = ?", (album_id,))
+            self.conn.commit()
+            return True, "ok"
+        except Exception as e:
+            print(f"❌ Помилка make_album_personal_if_solo({album_id}): {e}")
+            self.conn.rollback()
+            return False, "db_error"
     
     def get_album(self, album_id):
         """Отримати дані альбому"""
