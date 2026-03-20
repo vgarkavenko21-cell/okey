@@ -39,6 +39,8 @@ from album_manage import (
     confirm_archive, delete_album_start,
     handle_delete_confirmation
 )
+from premium import show_premium_menu, handle_premium_callback
+from admin import admin_start, handle_admin_text
 # Імпорти функцій спільного альбому для головного файлу (main.py)
 # Імпорти для роботи зі спільними альбомами в main.py
 # На початку main.py, де інші імпорти
@@ -290,18 +292,16 @@ async def create_album_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
     query = update.callback_query
     await query.answer()
     
-    # Перевіряємо ліміти
+    # Перевіряємо ліміти (особисті альбоми: максимум 3 без Premium)
     user_id = query.from_user.id
     if not helpers.check_user_limit(db, user_id, 'albums'):
-        # Показуємо пропозицію Premium
-        keyboard = [[InlineKeyboardButton("💎 Отримати Premium", callback_data="premium_info")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
         await query.edit_message_text(
-            f"❌ Ви досягли ліміту безкоштовних альбомів ({FREE_LIMITS['albums']}).\n\n"
-            "Оформіть Premium для необмеженої кількості альбомів!",
-            reply_markup=reply_markup
+            "❌ Ви досягли ліміту безкоштовних особистих альбомів (3).\n\n"
+            "Отримайте Premium, щоб збільшити ліміт."
         )
+        fake_update = update
+        fake_update.message = query.message
+        await show_premium_menu(fake_update, context)
         return
     
     # Запитуємо назву альбому
@@ -1015,8 +1015,7 @@ async def show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("👁 Відображення файлів", callback_data="display_settings")],
         [InlineKeyboardButton("🔒 Налаштування приватності", callback_data="privacy_settings")],
-        [InlineKeyboardButton("💎 Premium", callback_data="premium_info")],
-        [InlineKeyboardButton("◀️ Назад", callback_data="back_to_main")]
+        [InlineKeyboardButton("💎 Premium", callback_data="premium_info")]
     ]
     
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1643,6 +1642,11 @@ async def handle_all_text_inputs(update: Update, context: ContextTypes.DEFAULT_T
     text = update.message.text
     if not text: return False
 
+    # Адмін‑панель: обробляємо текст першою, якщо активна
+    from admin import handle_admin_text
+    if await handle_admin_text(update, context):
+        return True
+
     # Якщо користувач натискає кнопки спільного альбому, але прапорець shared_album_active
     # з якихось причин злетів — відновлюємо стан з того, що вже є в user_data.
     SHARED_MENU_BUTTONS = {
@@ -1816,6 +1820,8 @@ def main():
 
     # Команди та колбеки
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("admin", admin_start))
+    application.add_handler(CallbackQueryHandler(handle_premium_callback, pattern="^premium_"))
     application.add_handler(CallbackQueryHandler(callback_handler))
 
     print("🚀 Маршрутизатори оновлені. Запускаємося!")

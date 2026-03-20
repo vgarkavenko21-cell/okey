@@ -26,30 +26,29 @@ def get_file_emoji(file_type):
     return emojis.get(file_type, '📁')
 
 def check_user_limit(db, user_id, limit_type):
-    """Перевірка лімітів користувача"""
-    from config import FREE_LIMITS
+    """Перевірка лімітів користувача.
     
+    Логіка для альбомів:
+    - Без Premium: максимум 3 особистих альбоми та 3 спільних (де користувач — owner).
+    - З Premium: лімітів немає.
+    """
     # Перевіряємо чи користувач Premium
-    user = db.cursor.execute(
-        "SELECT is_premium FROM users WHERE user_id = ?",
-        (user_id,)
-    ).fetchone()
-    
+    user = db.get_user(user_id)
     if user and user['is_premium']:
         return True  # Для Premium лімітів немає
-    
-    # Підрахунок кількості
-    counts = {
-        'albums': "SELECT COUNT(*) FROM albums WHERE user_id = ? AND is_archived = 0",
-        'shared_albums': "SELECT COUNT(*) FROM shared_albums WHERE user_id = ?",
-        'notes': "SELECT COUNT(*) FROM notes WHERE user_id = ?",
-        'shared_notes': "SELECT COUNT(*) FROM shared_notes WHERE user_id = ?"
-    }
-    
-    if limit_type in counts:
-        count = db.cursor.execute(counts[limit_type], (user_id,)).fetchone()[0]
-        return count < FREE_LIMITS.get(limit_type, 0)
-    
+
+    if limit_type == 'albums':
+        personal = db.count_personal_albums(user_id)
+        owned_shared = db.count_owned_shared_albums(user_id)
+        # Створення особистого альбому обмежується тільки особистими,
+        # але в більшості викликів нам важливо не перевищити сумарний ліміт типу.
+        return personal < 3
+
+    if limit_type == 'shared_albums':
+        owned_shared = db.count_owned_shared_albums(user_id)
+        return owned_shared < 3
+
+    # Для інших ресурсів поки що лімітів немає
     return True
 
 def get_privacy_settings(db, user_id):

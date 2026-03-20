@@ -89,7 +89,16 @@ class Database:
             )
         ''')
 
-        # 5. Решта таблиць (нотатки, преміум, логи)
+        # 5. Таблиця каналів для Premium
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS premium_channels (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                link TEXT NOT NULL,
+                title TEXT
+            )
+        ''')
+        
+        # 6. Решта таблиць (нотатки, преміум, логи)
         self.cursor.execute('CREATE TABLE IF NOT EXISTS notes (note_id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, title TEXT, content TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, is_shared BOOLEAN DEFAULT 0, FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE)')
         self.cursor.execute('CREATE TABLE IF NOT EXISTS shared_notes (id INTEGER PRIMARY KEY AUTOINCREMENT, note_id INTEGER NOT NULL, user_id INTEGER NOT NULL, access_level TEXT CHECK(access_level IN ("view", "edit")) DEFAULT "view", added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (note_id) REFERENCES notes (note_id) ON DELETE CASCADE, FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE, UNIQUE(note_id, user_id))')
         self.cursor.execute('CREATE TABLE IF NOT EXISTS premium_subscriptions (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, subscription_type TEXT CHECK(subscription_type IN ("channel", "paid", "manual")), channel_id TEXT, granted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, expires_at TIMESTAMP, is_active BOOLEAN DEFAULT 1, FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE)')

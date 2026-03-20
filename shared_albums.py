@@ -58,6 +58,21 @@ async def shared_create_start(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     await query.answer()
     
+    user_id = query.from_user.id
+    from helpers import check_user_limit
+    from premium import show_premium_menu
+
+    # Ліміт на спільні альбоми: максимум 3, якщо немає Premium
+    if not check_user_limit(db, user_id, 'shared_albums'):
+        await query.edit_message_text(
+            "❌ Ви досягли ліміту безкоштовних спільних альбомів (3).\n\n"
+            "Отримайте Premium, щоб збільшити ліміт."
+        )
+        fake_update = update
+        fake_update.message = query.message
+        await show_premium_menu(fake_update, context)
+        return
+
     context.user_data['shared_awaiting_name'] = True
     context.user_data['shared_creating'] = True
     
