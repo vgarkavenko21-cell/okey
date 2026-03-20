@@ -1428,8 +1428,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Приклад: `123456789` або `@nickname`",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("◀️ В адмін-меню", callback_data="admin_back")],
-                [InlineKeyboardButton("👥 Переглянути всіх Premium", callback_data="admin_premium_active_list_page_0")],
+                [InlineKeyboardButton("◀️ В Premium-меню", callback_data="admin_premium")],
             ]),
         )
         return
@@ -1971,8 +1970,20 @@ async def admin_premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⛔ Немає доступу.")
         return
 
-    # Для стабільності — тільки список активних Premium без кнопок “забрати/видати”
-    await admin_premium_active_list_page(update, context, 0)
+    keyboard = [
+        [InlineKeyboardButton("👥 Переглянути всіх з преміумом", callback_data="admin_premium_active_list_page_view_0")],
+        [InlineKeyboardButton("🗑 Забрати преміум", callback_data="admin_premium_active_list_page_remove_0")],
+        [InlineKeyboardButton("💳 Видати преміум (гів)", callback_data="admin_premium_input_grant_paid")],
+        [InlineKeyboardButton("🔗 Канали Premium", callback_data="admin_premium_channels_manage")],
+    ]
+    try:
+        await query.edit_message_text(
+            "💎 Управління Premium. Оберіть дію:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+    except BadRequest as e:
+        if "Message is not modified" not in str(e):
+            raise
 
 
 async def admin_premium_active_list_page(
@@ -2070,31 +2081,28 @@ async def admin_premium_active_list_page(
                 )
             ])
         else:
-            # view: залишаємо "керування" кнопками
-            kb_rows.append([
-                InlineKeyboardButton("🗑 Забрати", callback_data=f"admin_premium_remove_uid_{uid}_page_{page}"),
-                InlineKeyboardButton("💳 Видати гів", callback_data=f"admin_premium_grant_paid_uid_{uid}_page_{page}"),
-                InlineKeyboardButton("🔗 Видати sub", callback_data=f"admin_premium_grant_channel_uid_{uid}_page_{page}"),
-            ])
+            # view: список тільки для перегляду, без кнопок дій по користувачах
+            pass
 
     if not lines:
         await query.edit_message_text(
             "Немає активних Premium користувачів.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ В адмін-меню", callback_data="admin_back")]]),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ В Premium-меню", callback_data="admin_premium")]]),
         )
         return
 
-    # Навігація по сторінках + вихід
-    nav: list[InlineKeyboardButton] = []
-    if page > 0:
-        nav.append(InlineKeyboardButton("◀️ Prev", callback_data=f"admin_premium_active_list_page_{page-1}"))
-    if offset + page_size < total:
-        nav.append(InlineKeyboardButton("Next ▶️", callback_data=f"admin_premium_active_list_page_{page+1}"))
-    if nav:
-        kb_rows.append(nav)
-
-    kb_rows.append([InlineKeyboardButton("◀️ В Premium-меню", callback_data="admin_premium")])
-    kb_rows.append([InlineKeyboardButton("◀️ В адмін-меню", callback_data="admin_back")])
+    # У режимі перегляду залишаємо тільки кнопку повернення в Premium-меню.
+    if mode == "view":
+        kb_rows = [[InlineKeyboardButton("◀️ В Premium-меню", callback_data="admin_premium")]]
+    else:
+        nav: list[InlineKeyboardButton] = []
+        if page > 0:
+            nav.append(InlineKeyboardButton("◀️ Prev", callback_data=f"admin_premium_active_list_page_{mode}_{page-1}"))
+        if offset + page_size < total:
+            nav.append(InlineKeyboardButton("Next ▶️", callback_data=f"admin_premium_active_list_page_{mode}_{page+1}"))
+        if nav:
+            kb_rows.append(nav)
+        kb_rows.append([InlineKeyboardButton("◀️ В Premium-меню", callback_data="admin_premium")])
 
     text = "👥 **Активні Premium**\n\n" + "\n".join(lines) + f"\n\nСторінка: {page+1}"
     try:

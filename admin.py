@@ -79,8 +79,7 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 f"✅ Видано гів Premium на {days} днів (uid={uid}).",
                 reply_markup=InlineKeyboardMarkup(
                     [
-                        [InlineKeyboardButton("👥 Переглянути всіх Premium", callback_data="admin_premium_active_list_page_0")],
-                        [InlineKeyboardButton("◀️ В адмін-меню", callback_data="admin_back")],
+                        [InlineKeyboardButton("◀️ В Premium-меню", callback_data="admin_premium")],
                     ]
                 ),
             )
@@ -91,8 +90,7 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 f"✅ Видано гів Premium (sub/channel) на {days} днів (uid={uid}).",
                 reply_markup=InlineKeyboardMarkup(
                     [
-                        [InlineKeyboardButton("👥 Переглянути всіх Premium", callback_data="admin_premium_active_list_page_0")],
-                        [InlineKeyboardButton("◀️ В адмін-меню", callback_data="admin_back")],
+                        [InlineKeyboardButton("◀️ В Premium-меню", callback_data="admin_premium")],
                     ]
                 ),
             )
@@ -297,7 +295,6 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             [InlineKeyboardButton("🗑 Забрати преміум", callback_data="admin_premium_active_list_page_remove_0")],
             [InlineKeyboardButton("💳 Видати преміум (гів)", callback_data="admin_premium_input_grant_paid")],
             [InlineKeyboardButton("🔗 Канали Premium", callback_data="admin_premium_channels_manage")],
-            [InlineKeyboardButton("◀️ В адмін-меню", callback_data="admin_back")],
         ]
 
         await update.message.reply_text(
