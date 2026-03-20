@@ -455,6 +455,17 @@ async def open_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Отримуємо album_id з callback_data
     album_id = int(query.data.split('_')[2])
+
+    user_id = query.from_user.id
+    if helpers.exceeded_album_limits_without_premium(db, user_id):
+        await query.edit_message_text(
+            "❌ У вас перевищено безкоштовний ліміт альбомів і Premium неактивний.\n\n"
+            "Щоб знову відкрити альбоми — активуйте Premium.",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("💎 Отримати Premium", callback_data="premium_info")]]
+            ),
+        )
+        return
     
     # ВАЖЛИВО: Зберігаємо поточний альбом в контексті
     context.user_data['current_album'] = album_id
@@ -2150,6 +2161,10 @@ async def admin_users_send_all(update: Update, context: ContextTypes.DEFAULT_TYP
     users = db.cursor.execute(
         "SELECT user_id, username, first_name, is_premium, premium_until FROM users ORDER BY registered_at DESC"
     ).fetchall()
+    total_users = len(users)
+    total_groups_channels = db.cursor.execute(
+        "SELECT COUNT(*) FROM bot_chats WHERE chat_type IN ('group','supergroup','channel')"
+    ).fetchone()[0]
 
     lines: list[str] = []
     chunk_size = 25
@@ -2198,12 +2213,28 @@ async def admin_users_send_all(update: Update, context: ContextTypes.DEFAULT_TYP
             line = f"{user_ref} {('- ' + name) if name else ''} — {label} до {premium_until}"
         lines.append(line)
 
+        if i == 0:
+            header = (
+                "👥 **Користувачі**\n\n"
+                f"Загальна кількість користувачів: {total_users}\n"
+                f"Кількість доданих груп/каналів: {total_groups_channels}\n\n"
+                "Список:\n"
+            )
+            lines.insert(0, header)
+
         if (i + 1) % chunk_size == 0:
             await query.message.reply_text("\n".join(lines))
             messages_sent += 1
             lines = []
 
     if lines:
+        if total_users == 0:
+            lines = [
+                "👥 **Користувачі**\n\n"
+                f"Загальна кількість користувачів: {total_users}\n"
+                f"Кількість доданих груп/каналів: {total_groups_channels}\n\n"
+                "Список порожній."
+            ]
         await query.message.reply_text("\n".join(lines))
         messages_sent += 1
 
@@ -2429,8 +2460,7 @@ async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("👤 Відправити певному користувачу", callback_data="admin_broadcast_one_user")],
         [InlineKeyboardButton("🔔 Розсилка підписникам бота", callback_data="admin_broadcast_subs")],
         [InlineKeyboardButton("👥 Розсилка по групах/каналах", callback_data="admin_broadcast_groups")],
-        [InlineKeyboardButton("🗑 Видалити повідомлення", callback_data="admin_broadcast_delete_menu")],
-        [InlineKeyboardButton("◀️ Назад", callback_data="admin_back")],
+        [InlineKeyboardButton("🗑 Видалити повідомлення", callback_data="admin_broadcast_delete_menu")]
     ]
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 

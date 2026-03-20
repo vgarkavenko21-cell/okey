@@ -51,6 +51,23 @@ def check_user_limit(db, user_id, limit_type):
     # Для інших ресурсів поки що лімітів немає
     return True
 
+
+def exceeded_album_limits_without_premium(db, user_id):
+    """
+    Повертає True, якщо користувач БЕЗ Premium перевищив безкоштовні ліміти альбомів.
+    Враховує:
+    - особисті альбоми (owner)
+    - спільні альбоми, де користувач owner
+    """
+    if db.check_premium(user_id):
+        return False
+
+    personal_limit = FREE_LIMITS.get("albums", 3)
+    shared_limit = FREE_LIMITS.get("shared_albums", 3)
+    personal = db.count_personal_albums(user_id)
+    owned_shared = db.count_owned_shared_albums(user_id)
+    return personal > personal_limit or owned_shared > shared_limit
+
 def get_privacy_settings(db, user_id):
     """Отримати налаштування приватності"""
     result = db.cursor.execute(

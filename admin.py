@@ -449,8 +449,7 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     if text == "👥 Користувачі":
         keyboard = [
-            [InlineKeyboardButton("🧾 Надіслати список (всі)", callback_data="admin_users_send_all")],
-            [InlineKeyboardButton("◀️ В адмін-меню", callback_data="admin_back")],
+            [InlineKeyboardButton("🧾 Надіслати список (всі)", callback_data="admin_users_send_all")]
         ]
         await update.message.reply_text("👥 **Користувачі / Premium статус**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
         return True

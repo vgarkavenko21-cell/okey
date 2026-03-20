@@ -171,6 +171,18 @@ async def shared_open_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not access:
         await query.edit_message_text("❌ У вас немає доступу до цього альбому.")
         return
+
+    album = db.get_album(album_id)
+    if album and int(album["user_id"]) == int(user_id):
+        if helpers.exceeded_album_limits_without_premium(db, user_id):
+            await query.edit_message_text(
+                "❌ У вас перевищено безкоштовний ліміт альбомів і Premium неактивний.\n\n"
+                "Щоб знову відкрити альбоми — активуйте Premium.",
+                reply_markup=InlineKeyboardMarkup(
+                    [[InlineKeyboardButton("💎 Отримати Premium", callback_data="premium_info")]]
+                ),
+            )
+            return
     
     context.user_data['album_keyboard_active'] = False
     context.user_data.pop('current_album', None)
@@ -178,8 +190,6 @@ async def shared_open_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['current_shared_album'] = album_id
     context.user_data['shared_album_active'] = True
     context.user_data['shared_access_level'] = access['access_level']
-    
-    album = db.get_album(album_id)
     
     text = (
         f"👥 **{album['name']}**\n"
