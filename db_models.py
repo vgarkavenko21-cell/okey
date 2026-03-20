@@ -122,10 +122,93 @@ class Database:
                 FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
             )
         ''')
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS bot_chat_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                chat_type TEXT NOT NULL,
+                event_type TEXT CHECK(event_type IN ("added", "removed")) NOT NULL,
+                event_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS bot_chats (
+                chat_id INTEGER PRIMARY KEY,
+                chat_type TEXT NOT NULL,
+                is_active BOOLEAN DEFAULT 1,
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS broadcasts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                admin_id INTEGER NOT NULL,
+                target_mode TEXT NOT NULL,
+                source_chat_id INTEGER NOT NULL,
+                source_message_id INTEGER NOT NULL,
+                content_key TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS broadcast_deliveries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                broadcast_id INTEGER NOT NULL,
+                target_chat_id INTEGER NOT NULL,
+                target_message_id INTEGER NOT NULL,
+                sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
         self.cursor.execute('CREATE TABLE IF NOT EXISTS archive_log (id INTEGER PRIMARY KEY AUTOINCREMENT, album_id INTEGER, user_id INTEGER, action TEXT CHECK(action IN ("archive", "unarchive")), action_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (album_id) REFERENCES albums (album_id), FOREIGN KEY (user_id) REFERENCES users (user_id))')
         
         self.conn.commit()
         print("✅ Структура бази даних перевірена та оновлена")
+
+    def log_bot_chat_event(self, chat_id: int, chat_type: str, event_type: str):
+        """Логує подію додавання/видалення бота та оновлює поточний стан чату."""
+        if event_type not in ("added", "removed"):
+            return
+        self.cursor.execute(
+            '''
+            INSERT INTO bot_chat_events (chat_id, chat_type, event_type, event_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ''',
+            (chat_id, chat_type, event_type),
+        )
+        self.cursor.execute(
+            '''
+            INSERT INTO bot_chats (chat_id, chat_type, is_active, added_at, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT(chat_id) DO UPDATE SET
+                chat_type = excluded.chat_type,
+                is_active = excluded.is_active,
+                updated_at = CURRENT_TIMESTAMP
+            ''',
+            (chat_id, chat_type, 1 if event_type == "added" else 0),
+        )
+        self.conn.commit()
+
+    def create_broadcast(self, admin_id: int, target_mode: str, source_chat_id: int, source_message_id: int, content_key: str | None):
+        self.cursor.execute(
+            '''
+            INSERT INTO broadcasts (admin_id, target_mode, source_chat_id, source_message_id, content_key, created_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ''',
+            (admin_id, target_mode, source_chat_id, source_message_id, content_key),
+        )
+        self.conn.commit()
+        return self.cursor.lastrowid
+
+    def add_broadcast_delivery(self, broadcast_id: int, target_chat_id: int, target_message_id: int):
+        self.cursor.execute(
+            '''
+            INSERT INTO broadcast_deliveries (broadcast_id, target_chat_id, target_message_id, sent_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ''',
+            (broadcast_id, target_chat_id, target_message_id),
+        )
+        self.conn.commit()
     
     # ========== МЕТОДИ ДЛЯ РОБОТИ З КОРИСТУВАЧАМИ ==========
     

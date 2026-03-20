@@ -1,12 +1,144 @@
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from telegram import (
+    Update,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardRemove,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+)
 from telegram.ext import ContextTypes
 from datetime import datetime, timedelta
+from typing import Any
 
 from config import ADMIN_IDS
 from db_models import Database
 
 db = Database()
 ADMIN_PASSWORD = "123"
+
+
+def _message_content_key(msg: Any) -> str:
+    """Стабільний ключ для порівняння "ідентичних" повідомлень."""
+    if msg.text is not None:
+        return f"text::{msg.text}"
+    if msg.caption is not None:
+        base = f"caption::{msg.caption}"
+    else:
+        base = "caption::"
+    if msg.photo:
+        return base + f"::photo::{msg.photo[-1].file_unique_id}"
+    if msg.video:
+        return base + f"::video::{msg.video.file_unique_id}"
+    if msg.document:
+        return base + f"::document::{msg.document.file_unique_id}"
+    if msg.audio:
+        return base + f"::audio::{msg.audio.file_unique_id}"
+    if msg.voice:
+        return base + f"::voice::{msg.voice.file_unique_id}"
+    if msg.video_note:
+        return base + f"::video_note::{msg.video_note.file_unique_id}"
+    if msg.sticker:
+        return f"sticker::{msg.sticker.file_unique_id}"
+    return "other"
+
+
+async def _send_broadcast_from_message(update: Update, context: ContextTypes.DEFAULT_TYPE, mode: str, target_chat_ids: list[int]) -> bool:
+    msg = update.message
+    if not msg:
+        return False
+    admin_id = update.effective_user.id
+    sent_ok = 0
+    failed = 0
+    key = _message_content_key(msg)
+    broadcast_id = db.create_broadcast(admin_id, mode, msg.chat_id, msg.message_id, key)
+    for chat_id in target_chat_ids:
+        try:
+            copied = await context.bot.copy_message(
+                chat_id=chat_id,
+                from_chat_id=msg.chat_id,
+                message_id=msg.message_id,
+            )
+            db.add_broadcast_delivery(broadcast_id, chat_id, copied.message_id)
+            sent_ok += 1
+        except Exception:
+            failed += 1
+    await msg.reply_text(f"✅ Розсилку завершено.\nНадіслано: {sent_ok}\nПомилок: {failed}")
+    return True
+
+
+async def handle_admin_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Обробка будь-якого повідомлення адміна для розсилок/видалення."""
+    ud = context.user_data
+    if not ud.get("is_admin"):
+        return False
+    msg = update.message
+    if not msg:
+        return False
+
+    # Видалення "за зразком" (ідентичне повідомлення)
+    if ud.get("admin_broadcast_delete_by_sample"):
+        key = _message_content_key(msg)
+        row = db.cursor.execute(
+            "SELECT id FROM broadcasts WHERE admin_id = ? AND content_key = ? ORDER BY id DESC LIMIT 1",
+            (update.effective_user.id, key),
+        ).fetchone()
+        if not row:
+            await msg.reply_text("❌ Не знайдено ідентичної розсилки для видалення.")
+            ud.pop("admin_broadcast_delete_by_sample", None)
+            return True
+        b_id = int(row["id"])
+        rows = db.cursor.execute(
+            "SELECT target_chat_id, target_message_id FROM broadcast_deliveries WHERE broadcast_id = ?",
+            (b_id,),
+        ).fetchall()
+        deleted = 0
+        failed = 0
+        for r in rows:
+            try:
+                await context.bot.delete_message(chat_id=int(r["target_chat_id"]), message_id=int(r["target_message_id"]))
+                deleted += 1
+            except Exception:
+                failed += 1
+        await msg.reply_text(f"🗑 Видалення завершено.\nВидалено: {deleted}\nПомилок: {failed}")
+        ud.pop("admin_broadcast_delete_by_sample", None)
+        return True
+
+    mode = ud.get("admin_broadcast_wait_mode")
+    if not mode:
+        return False
+
+    if mode == "all":
+        user_ids = [int(r["user_id"]) for r in db.cursor.execute("SELECT user_id FROM users").fetchall()]
+        group_ids = [int(r["chat_id"]) for r in db.cursor.execute(
+            "SELECT chat_id FROM bot_chats WHERE chat_type IN ('group','supergroup','channel') AND is_active = 1"
+        ).fetchall()]
+        targets = list(dict.fromkeys(user_ids + group_ids))
+        ud.pop("admin_broadcast_wait_mode", None)
+        return await _send_broadcast_from_message(update, context, "all", targets)
+
+    if mode == "subs":
+        targets = [int(r["user_id"]) for r in db.cursor.execute("SELECT user_id FROM users").fetchall()]
+        ud.pop("admin_broadcast_wait_mode", None)
+        return await _send_broadcast_from_message(update, context, "subs", targets)
+
+    if mode == "groups":
+        targets = [int(r["chat_id"]) for r in db.cursor.execute(
+            "SELECT chat_id FROM bot_chats WHERE chat_type IN ('group','supergroup','channel') AND is_active = 1"
+        ).fetchall()]
+        ud.pop("admin_broadcast_wait_mode", None)
+        return await _send_broadcast_from_message(update, context, "groups", targets)
+
+    if mode == "one_user":
+        target_chat_id = ud.get("admin_broadcast_target_user")
+        if not target_chat_id:
+            await msg.reply_text("❌ Не задано користувача. Оберіть ще раз у меню розсилки.")
+            ud.pop("admin_broadcast_wait_mode", None)
+            return True
+        ud.pop("admin_broadcast_wait_mode", None)
+        ud.pop("admin_broadcast_target_user", None)
+        return await _send_broadcast_from_message(update, context, "one_user", [int(target_chat_id)])
+
+    return False
 
 ADMIN_MENU = ReplyKeyboardMarkup([
     [KeyboardButton("🔗 Канали Premium")],
@@ -47,6 +179,35 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if not ud.get("is_admin"):
         return False
 
+    # ===== Admin: розсилка (ввід користувача) =====
+    if ud.get("admin_broadcast_wait_user"):
+        raw = (text or "").strip()
+        if raw.startswith("@"):
+            uname = raw[1:].strip()
+            row = db.cursor.execute("SELECT user_id FROM users WHERE username = ?", (uname,)).fetchone()
+            if not row:
+                await update.message.reply_text("❌ Користувача не знайдено. Введіть ID або @username.")
+                return True
+            target_id = int(row["user_id"])
+        else:
+            try:
+                target_id = int(raw)
+            except Exception:
+                await update.message.reply_text("❌ Введіть коректний ID або @username.")
+                return True
+        ud.pop("admin_broadcast_wait_user", None)
+        ud["admin_broadcast_wait_mode"] = "one_user"
+        ud["admin_broadcast_target_user"] = target_id
+        await update.message.reply_text(
+            f"✅ Користувача обрано: {target_id}\n"
+            "Тепер надішліть повідомлення для тестової відправки (будь-який формат)."
+        )
+        return True
+
+    # ===== Admin: розсилка (очікуємо саме повідомлення) =====
+    if ud.get("admin_broadcast_wait_mode") or ud.get("admin_broadcast_delete_by_sample"):
+        return await handle_admin_broadcast_message(update, context)
+
     # ===== Admin: ввід кількості днів для видачі Premium =====
     if ud.get("admin_premium_grant_days"):
         state = ud.get("admin_premium_grant_days") or {}
@@ -74,7 +235,6 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
         if action == "grant_paid":
             db.set_premium(uid, expires_at=expires_at, subscription_type="paid", channel_id="admin")
-            from telegram import InlineKeyboardMarkup, InlineKeyboardButton
             await update.message.reply_text(
                 f"✅ Видано гів Premium на {days} днів (uid={uid}).",
                 reply_markup=InlineKeyboardMarkup(
@@ -85,7 +245,6 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             )
         elif action == "grant_channel":
             db.set_premium(uid, expires_at=expires_at, subscription_type="channel", channel_id="admin")
-            from telegram import InlineKeyboardMarkup, InlineKeyboardButton
             await update.message.reply_text(
                 f"✅ Видано гів Premium (sub/channel) на {days} днів (uid={uid}).",
                 reply_markup=InlineKeyboardMarkup(
@@ -219,6 +378,19 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return True
 
     # ===== Admin: custom period for stats =====
+    # Якщо адмін передумав вводити "свій період" і натиснув іншу кнопку меню —
+    # скидаємо стан очікування дат.
+    if ud.get("admin_stats_custom_phase") and text in {
+        "📊 Статистика",
+        "👥 Користувачі",
+        "💎 Управління Premium",
+        "🔗 Канали Premium",
+        "📨 Розсилка",
+        "◀️ Вийти з адмін‑панелі",
+    }:
+        ud.pop("admin_stats_custom_phase", None)
+        ud.pop("admin_stats_custom_start", None)
+
     if ud.get("admin_stats_custom_phase") == "a":
         try:
             start_dt = datetime.strptime(text.strip(), "%Y-%m-%d")
@@ -267,19 +439,15 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     # ===== Admin menu via reply keyboard =====
     if text == "📊 Статистика":
         keyboard = [
-            [InlineKeyboardButton("🕐 За весь час", callback_data="admin_stats_range_all")],
-            [InlineKeyboardButton("📅 За день", callback_data="admin_stats_range_day")],
-            [InlineKeyboardButton("📆 За тиждень", callback_data="admin_stats_range_week")],
-            [InlineKeyboardButton("🗓 За місяць", callback_data="admin_stats_range_month")],
-            [InlineKeyboardButton("✍️ Свій період", callback_data="admin_stats_range_custom")],
-            [InlineKeyboardButton("◀️ В адмін-меню", callback_data="admin_back")],
+            [InlineKeyboardButton("📊 Відкрити статистику", callback_data="admin_stats")],
         ]
-        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-        await update.message.reply_text("📊 **Статистика Premium**\n\nОберіть період:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        await update.message.reply_text(
+            "📊 Статистика бота.\n\nНатисніть кнопку нижче, щоб переглянути зведення.",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
         return True
 
     if text == "👥 Користувачі":
-        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
         keyboard = [
             [InlineKeyboardButton("🧾 Надіслати список (всі)", callback_data="admin_users_send_all")],
             [InlineKeyboardButton("◀️ В адмін-меню", callback_data="admin_back")],
@@ -288,8 +456,6 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return True
 
     if text == "💎 Управління Premium":
-        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-
         keyboard = [
             [InlineKeyboardButton("👥 Переглянути всіх з преміумом", callback_data="admin_premium_active_list_page_view_0")],
             [InlineKeyboardButton("🗑 Забрати преміум", callback_data="admin_premium_active_list_page_remove_0")],
@@ -299,6 +465,16 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
         await update.message.reply_text(
             "💎 Управління Premium. Оберіть дію:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return True
+
+    if text == "📨 Розсилка":
+        keyboard = [
+            [InlineKeyboardButton("📨 Відкрити меню розсилки", callback_data="admin_broadcast")],
+        ]
+        await update.message.reply_text(
+            "📨 Розсилка.\n\nНатисніть кнопку нижче, щоб відкрити інструменти розсилки.",
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
         return True
@@ -387,8 +563,6 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                     lines.append(f"- {ch['id']}: {ch['link']}")
 
             # Інлайн-кнопка для повторного додавання
-            from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-
             keyboard = [[InlineKeyboardButton("➕ Додати посилання", callback_data="admin_premium_add_link")]]
             await update.message.reply_text(
                 "\n".join(lines),
@@ -414,8 +588,6 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 else:
                     lines.append(f"- {ch['id']}: {ch['link']}")
             await update.message.reply_text("\n".join(lines))
-
-        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 
         keyboard = InlineKeyboardMarkup(
             [[InlineKeyboardButton("➕ Додати посилання", callback_data="admin_premium_add_link")]]

@@ -7,6 +7,7 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
+    ChatMemberHandler,
     filters,
     ContextTypes
 )
@@ -41,7 +42,7 @@ from album_manage import (
     handle_delete_confirmation
 )
 from premium import show_premium_menu, handle_premium_callback
-from admin import admin_start, handle_admin_text
+from admin import admin_start, handle_admin_text, handle_admin_broadcast_message
 # Імпорти функцій спільного альбому для головного файлу (main.py)
 # Імпорти для роботи зі спільними альбомами в main.py
 # На початку main.py, де інші імпорти
@@ -1223,9 +1224,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not (data in allow_callbacks or data.startswith(allow_prefixes)):
             await query.answer("Спочатку введіть кількість днів або скасуйте дію.")
             return
-    if context.user_data.get("admin_stats_custom_phase") and data not in {"admin_back"}:
-        await query.answer("Спочатку введіть дати для свого періоду.")
-        return
+    if context.user_data.get("admin_stats_custom_phase"):
+        # Якщо адмін передумав і натиснув будь-яку кнопку статистики/навігації,
+        # скидаємо режим ручного вводу дат і дозволяємо перейти далі.
+        if data != "admin_stats_range_custom":
+            context.user_data.pop("admin_stats_custom_phase", None)
+            context.user_data.pop("admin_stats_custom_start", None)
 
     # Меню Premium (кнопка в налаштуваннях + кнопки з повідомлень про ліміти)
     if data == "premium_info":
@@ -1248,6 +1252,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "admin_stats_range_all":
         await admin_stats_show_period(update, context, None, datetime.now())
         return
+    if data == "admin_stats_period_menu":
+        await admin_stats_period_menu(update, context)
+        return
     if data == "admin_stats_range_day":
         await admin_stats_show_period(update, context, datetime.now() - timedelta(days=1), datetime.now())
         return
@@ -1257,9 +1264,16 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "admin_stats_range_month":
         await admin_stats_show_period(update, context, datetime.now() - timedelta(days=30), datetime.now())
         return
+    if data == "admin_stats_range_year":
+        await admin_stats_show_period(update, context, datetime.now() - timedelta(days=365), datetime.now())
+        return
     if data == "admin_stats_range_custom":
         context.user_data["admin_stats_custom_phase"] = "a"
-        await query.edit_message_text("✍️ Введіть дату A у форматі `YYYY-MM-DD`:")
+        await query.edit_message_text(
+            "✍️ Введіть початкову дату `ВІД` у форматі `YYYY-MM-DD`.\n"
+            "Наприклад: `2026-03-01`",
+            parse_mode="Markdown",
+        )
         return
 
     # ---- Admin: users list ----
@@ -1693,6 +1707,92 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif data == "admin_broadcast":
         await admin_broadcast(update, context)
+
+    elif data == "admin_broadcast_all":
+        await query.answer()
+        context.user_data["admin_broadcast_wait_mode"] = "all"
+        await query.edit_message_text(
+            "📨 Надішліть повідомлення для розсилки ВСІМ (користувачі + групи/канали).\n"
+            "Підтримується будь-який формат повідомлення.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ В меню розсилки", callback_data="admin_broadcast")]]),
+        )
+
+    elif data == "admin_broadcast_subs":
+        await query.answer()
+        context.user_data["admin_broadcast_wait_mode"] = "subs"
+        await query.edit_message_text(
+            "🔔 Надішліть повідомлення для розсилки підписникам бота (private).\n"
+            "Підтримується будь-який формат повідомлення.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ В меню розсилки", callback_data="admin_broadcast")]]),
+        )
+
+    elif data == "admin_broadcast_groups":
+        await query.answer()
+        context.user_data["admin_broadcast_wait_mode"] = "groups"
+        await query.edit_message_text(
+            "👥 Надішліть повідомлення для розсилки по групах/каналах.\n"
+            "Підтримується будь-який формат повідомлення.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ В меню розсилки", callback_data="admin_broadcast")]]),
+        )
+
+    elif data == "admin_broadcast_one_user":
+        await query.answer()
+        context.user_data["admin_broadcast_wait_user"] = True
+        context.user_data.pop("admin_broadcast_wait_mode", None)
+        await query.edit_message_text(
+            "👤 Введіть ID або @username користувача для тестової розсилки.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ В меню розсилки", callback_data="admin_broadcast")]]),
+        )
+
+    elif data == "admin_broadcast_delete_menu":
+        await query.answer()
+        await query.edit_message_text(
+            "🗑 Видалення розсилок\n\nОберіть варіант:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🗑 Останнє повідомлення", callback_data="admin_broadcast_delete_last")],
+                [InlineKeyboardButton("📩 Надіслати ідентичне для видалення", callback_data="admin_broadcast_delete_by_sample")],
+                [InlineKeyboardButton("◀️ В меню розсилки", callback_data="admin_broadcast")],
+            ]),
+        )
+
+    elif data == "admin_broadcast_delete_last":
+        await query.answer()
+        row = db.cursor.execute(
+            "SELECT id FROM broadcasts WHERE admin_id = ? ORDER BY id DESC LIMIT 1",
+            (query.from_user.id,),
+        ).fetchone()
+        if not row:
+            await query.edit_message_text(
+                "❌ Немає розсилок для видалення.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ В меню розсилки", callback_data="admin_broadcast")]]),
+            )
+            return
+        b_id = int(row["id"])
+        rows = db.cursor.execute(
+            "SELECT target_chat_id, target_message_id FROM broadcast_deliveries WHERE broadcast_id = ?",
+            (b_id,),
+        ).fetchall()
+        deleted = 0
+        failed = 0
+        for r in rows:
+            try:
+                await context.bot.delete_message(chat_id=int(r["target_chat_id"]), message_id=int(r["target_message_id"]))
+                deleted += 1
+            except Exception:
+                failed += 1
+        await query.edit_message_text(
+            f"🗑 Видалення останньої розсилки завершено.\nВидалено: {deleted}\nПомилок: {failed}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ В меню розсилки", callback_data="admin_broadcast")]]),
+        )
+
+    elif data == "admin_broadcast_delete_by_sample":
+        await query.answer()
+        context.user_data["admin_broadcast_delete_by_sample"] = True
+        context.user_data.pop("admin_broadcast_wait_mode", None)
+        await query.edit_message_text(
+            "📩 Надішліть ідентичне повідомлення (як шаблон), і бот видалить відповідну розсилку.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ В меню розсилки", callback_data="admin_broadcast")]]),
+        )
     
     elif data == "admin_settings":
         await admin_settings(update, context)
@@ -1828,13 +1928,31 @@ async def admin_stats_show_period(update: Update, context: ContextTypes.DEFAULT_
     where_events += " AND event_at <= ?"
     params_events = (*params_events, end_str)
 
+    # Для періоду рахуємо унікальних користувачів по фактах видачі у premium_subscriptions.
+    # Так не буде "накрутки" через повторні події одного і того ж користувача.
+    where_subs = "1=1"
+    params_subs: tuple = ()
+    if start_str:
+        where_subs += " AND granted_at >= ?"
+        params_subs = (start_str,)
+    where_subs += " AND granted_at <= ?"
+    params_subs = (*params_subs, end_str)
+
+    giv_paid = _count(
+        f"SELECT COUNT(DISTINCT user_id) FROM premium_subscriptions "
+        f"WHERE subscription_type='paid' AND COALESCE(channel_id,'')='admin' AND {where_subs}",
+        params_subs,
+    )
     bought = _count(
-        f"SELECT COUNT(*) FROM premium_events WHERE event_type='grant_paid' AND {where_events}",
-        params_events,
+        f"SELECT COUNT(DISTINCT user_id) FROM premium_subscriptions "
+        f"WHERE (subscription_type='manual' OR (subscription_type='paid' AND COALESCE(channel_id,'')!='admin')) "
+        f"AND {where_subs}",
+        params_subs,
     )
     subs = _count(
-        f"SELECT COUNT(*) FROM premium_events WHERE event_type='grant_channel' AND {where_events}",
-        params_events,
+        f"SELECT COUNT(DISTINCT user_id) FROM premium_subscriptions "
+        f"WHERE subscription_type='channel' AND {where_subs}",
+        params_subs,
     )
     removed = _count(
         f"SELECT COUNT(*) FROM premium_events WHERE event_type='remove' AND {where_events}",
@@ -1853,20 +1971,128 @@ async def admin_stats_show_period(update: Update, context: ContextTypes.DEFAULT_
             (end_str,),
         ).fetchone()[0]
 
+    groups_added = db.cursor.execute(
+        f"SELECT COUNT(*) FROM bot_chat_events WHERE event_type='added' "
+        f"AND chat_type IN ('group','supergroup','channel') AND {where_events}",
+        params_events,
+    ).fetchone()[0]
+    bot_unsubscribed = db.cursor.execute(
+        f"SELECT COUNT(*) FROM bot_chat_events WHERE event_type='removed' "
+        f"AND chat_type = 'private' AND {where_events}",
+        params_events,
+    ).fetchone()[0]
+    # Поточний синхронізований стан Premium (не історія подій).
+    active_paid_now = db.cursor.execute(
+        "SELECT COUNT(*) FROM premium_subscriptions "
+        "WHERE is_active = 1 AND subscription_type = 'paid' "
+        "AND expires_at IS NOT NULL AND expires_at >= CURRENT_TIMESTAMP"
+    ).fetchone()[0]
+    active_giv_now = db.cursor.execute(
+        "SELECT COUNT(*) FROM premium_subscriptions "
+        "WHERE is_active = 1 AND subscription_type = 'paid' "
+        "AND COALESCE(channel_id,'')='admin' "
+        "AND expires_at IS NOT NULL AND expires_at >= CURRENT_TIMESTAMP"
+    ).fetchone()[0]
+    active_buy_now = db.cursor.execute(
+        "SELECT COUNT(*) FROM premium_subscriptions "
+        "WHERE is_active = 1 AND (subscription_type='manual' "
+        "OR (subscription_type='paid' AND COALESCE(channel_id,'')!='admin')) "
+        "AND expires_at IS NOT NULL AND expires_at >= CURRENT_TIMESTAMP"
+    ).fetchone()[0]
+    active_sub_now = db.cursor.execute(
+        "SELECT COUNT(*) FROM premium_subscriptions "
+        "WHERE is_active = 1 AND subscription_type = 'channel' "
+        "AND expires_at IS NOT NULL AND expires_at >= CURRENT_TIMESTAMP"
+    ).fetchone()[0]
+    active_premium_now = active_paid_now + active_sub_now
+    total_users_now = db.cursor.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    no_premium_now = max(total_users_now - active_premium_now, 0)
+
     text = (
-        "📊 **Статистика Premium**\n\n"
+        "📊 **Статистика за період**\n\n"
         f"Період: {start_str or 'з початку'} → {end_str}\n\n"
-        f"💳 Куплених Premium (paid): {bought}\n"
-        f"🔗 Отриманих через підписку (channel): {subs}\n"
-        f"🗑 Відписок/забрань Premium: {removed}\n"
-        f"👥 Учасників (нові реєстрації): {participants}\n"
+        f"👥 Нові підписники (реєстрації): {participants}\n"
+        f"🏘 Додавань бота в групи/канали: {groups_added}\n"
+        f"💎 Загальний Premium зараз: {active_premium_now}\n"
+        f"💳 Куплено Premium (buy): {active_buy_now}\n"
+        f"🎁 Видано Premium (give): {active_giv_now}\n"
+        f"🔗 Підписок Premium (sub): {active_sub_now}\n"
+        f"🗑 Втрачено / забрано Premium: {removed}\n"
+        f"🆓 Без Premium зараз: {no_premium_now}\n"
+        f"🚫 Відписки від бота: {bot_unsubscribed}\n"
     )
 
-    keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="admin_stats")], [InlineKeyboardButton("◀️ В адмін-меню", callback_data="admin_back")]]
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    keyboard = [[InlineKeyboardButton("◀️ До вибору періоду", callback_data="admin_stats_period_menu")]]
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 
 async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    total_users = db.cursor.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    total_subscribers = db.cursor.execute(
+        "SELECT COUNT(*) FROM bot_chats WHERE chat_type = 'private' AND is_active = 1"
+    ).fetchone()[0]
+    if total_subscribers == 0:
+        total_subscribers = total_users
+
+    active_groups_channels = db.cursor.execute(
+        "SELECT COUNT(*) FROM bot_chats WHERE chat_type IN ('group','supergroup','channel') AND is_active = 1"
+    ).fetchone()[0]
+    added_groups_channels_total = db.cursor.execute(
+        "SELECT COUNT(*) FROM bot_chat_events WHERE event_type='added' AND chat_type IN ('group','supergroup','channel')"
+    ).fetchone()[0]
+
+    # Рахуємо поточний Premium по активних підписках, а не по історії premium_events.
+    active_paid = db.cursor.execute(
+        "SELECT COUNT(*) FROM premium_subscriptions "
+        "WHERE is_active = 1 AND subscription_type = 'paid' "
+        "AND expires_at IS NOT NULL AND expires_at >= CURRENT_TIMESTAMP"
+    ).fetchone()[0]
+    active_giv = db.cursor.execute(
+        "SELECT COUNT(*) FROM premium_subscriptions "
+        "WHERE is_active = 1 AND subscription_type='paid' "
+        "AND COALESCE(channel_id,'')='admin' "
+        "AND expires_at IS NOT NULL AND expires_at >= CURRENT_TIMESTAMP"
+    ).fetchone()[0]
+    active_buy = db.cursor.execute(
+        "SELECT COUNT(*) FROM premium_subscriptions "
+        "WHERE is_active = 1 AND (subscription_type='manual' "
+        "OR (subscription_type='paid' AND COALESCE(channel_id,'')!='admin')) "
+        "AND expires_at IS NOT NULL AND expires_at >= CURRENT_TIMESTAMP"
+    ).fetchone()[0]
+    active_sub = db.cursor.execute(
+        "SELECT COUNT(*) FROM premium_subscriptions "
+        "WHERE is_active = 1 AND subscription_type = 'channel' "
+        "AND expires_at IS NOT NULL AND expires_at >= CURRENT_TIMESTAMP"
+    ).fetchone()[0]
+    premium_total = active_paid + active_sub
+    no_premium_total = max(total_users - premium_total, 0)
+
+    removed_total = db.cursor.execute(
+        "SELECT COUNT(*) FROM premium_events WHERE event_type='remove'"
+    ).fetchone()[0]
+
+    text = (
+        "📊 **Загальна статистика**\n\n"
+        f"👥 Загальна кількість користувачів: {total_users}\n"
+        f"🏘 Групи/канали з ботом: {active_groups_channels} активних, {added_groups_channels_total} додавань всього\n"
+        f"💎 Активних Premium зараз: {premium_total}\n"
+        f"🎁 Гів: {active_giv}\n"
+        f"🔗 Саб: {active_sub}\n"
+        f"💳 Бай: {active_buy}\n"
+        f"🆓 Без Premium зараз: {no_premium_total}\n"
+        f"🗑 Втрачено / забрано Premium: {removed_total}\n"
+    )
+
+    keyboard = [
+        [InlineKeyboardButton("🗓 Переглянути за період", callback_data="admin_stats_period_menu")],
+    ]
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+
+async def admin_stats_period_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
@@ -1875,15 +2101,36 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📅 За день", callback_data="admin_stats_range_day")],
         [InlineKeyboardButton("📆 За тиждень", callback_data="admin_stats_range_week")],
         [InlineKeyboardButton("🗓 За місяць", callback_data="admin_stats_range_month")],
+        [InlineKeyboardButton("📘 За рік", callback_data="admin_stats_range_year")],
         [InlineKeyboardButton("✍️ Свій період", callback_data="admin_stats_range_custom")],
-        [InlineKeyboardButton("◀️ В адмін-меню", callback_data="admin_back")],
+        [InlineKeyboardButton("◀️ До загальної статистики", callback_data="admin_stats")],
     ]
 
     await query.edit_message_text(
-        "📊 **Статистика Premium**\n\nОберіть період:",
+        "📊 **Статистика за період**\n\nОберіть період:",
         reply_markup=InlineKeyboardMarkup(keyboard),
-        # без Markdown
+        parse_mode="Markdown",
     )
+
+
+async def handle_my_chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Логує додавання/видалення бота в чатах (включно з private block/unblock)."""
+    cmu = update.my_chat_member
+    if not cmu:
+        return
+
+    chat = cmu.chat
+    old_status = cmu.old_chat_member.status
+    new_status = cmu.new_chat_member.status
+
+    was_active = old_status in {"member", "administrator", "creator", "restricted"}
+    is_active = new_status in {"member", "administrator", "creator", "restricted"}
+
+    if was_active == is_active:
+        return
+
+    event_type = "added" if is_active else "removed"
+    db.log_bot_chat_event(chat.id, chat.type, event_type)
 
 
 async def admin_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2167,13 +2414,25 @@ async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Масові розсилки"""
     query = update.callback_query
     await query.answer()
-    
-    text = "📢 **Масові розсилки**\n\nФункція в розробці"
-    
-    keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="admin_back")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+    context.user_data.pop("admin_broadcast_wait_mode", None)
+    context.user_data.pop("admin_broadcast_wait_user", None)
+    context.user_data.pop("admin_broadcast_target_user", None)
+    context.user_data.pop("admin_broadcast_delete_by_sample", None)
+
+    text = (
+        "📢 **Розсилка**\n\n"
+        "Оберіть тип розсилки або видалення повідомлень."
+    )
+
+    keyboard = [
+        [InlineKeyboardButton("📨 Відправити всім", callback_data="admin_broadcast_all")],
+        [InlineKeyboardButton("👤 Відправити певному користувачу", callback_data="admin_broadcast_one_user")],
+        [InlineKeyboardButton("🔔 Розсилка підписникам бота", callback_data="admin_broadcast_subs")],
+        [InlineKeyboardButton("👥 Розсилка по групах/каналах", callback_data="admin_broadcast_groups")],
+        [InlineKeyboardButton("🗑 Видалити повідомлення", callback_data="admin_broadcast_delete_menu")],
+        [InlineKeyboardButton("◀️ Назад", callback_data="admin_back")],
+    ]
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
 async def admin_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Налаштування бота"""
@@ -2385,6 +2644,11 @@ async def handle_all_text_inputs(update: Update, context: ContextTypes.DEFAULT_T
 async def handle_all_files_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Єдиний вхід для всіх медіа"""
     ud = context.user_data
+
+    # Адмінська розсилка: якщо очікуємо шаблон повідомлення (будь-який формат),
+    # обробляємо медіа тут до альбомної логіки.
+    if await handle_admin_broadcast_message(update, context):
+        return True
     
     # 1. Пріоритет спільним альбомам (якщо юзер зайшов у спільний)
     if ud.get('shared_album_active'):
@@ -2420,6 +2684,7 @@ def main():
     # Команди та колбеки
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("admin", admin_start))
+    application.add_handler(ChatMemberHandler(handle_my_chat_member_update, ChatMemberHandler.MY_CHAT_MEMBER))
     application.add_handler(CallbackQueryHandler(handle_premium_callback, pattern="^premium_"))
     application.add_handler(CallbackQueryHandler(callback_handler))
 
