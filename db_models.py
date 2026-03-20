@@ -102,6 +102,15 @@ class Database:
         self.cursor.execute('CREATE TABLE IF NOT EXISTS notes (note_id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, title TEXT, content TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, is_shared BOOLEAN DEFAULT 0, FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE)')
         self.cursor.execute('CREATE TABLE IF NOT EXISTS shared_notes (id INTEGER PRIMARY KEY AUTOINCREMENT, note_id INTEGER NOT NULL, user_id INTEGER NOT NULL, access_level TEXT CHECK(access_level IN ("view", "edit")) DEFAULT "view", added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (note_id) REFERENCES notes (note_id) ON DELETE CASCADE, FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE, UNIQUE(note_id, user_id))')
         self.cursor.execute('CREATE TABLE IF NOT EXISTS premium_subscriptions (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, subscription_type TEXT CHECK(subscription_type IN ("channel", "paid", "manual")), channel_id TEXT, granted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, expires_at TIMESTAMP, is_active BOOLEAN DEFAULT 1, FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE)')
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS premium_channel_clicks (
+                user_id INTEGER NOT NULL,
+                channel_id INTEGER NOT NULL,
+                clicked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, channel_id),
+                FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
+            )
+        ''')
         self.cursor.execute('CREATE TABLE IF NOT EXISTS archive_log (id INTEGER PRIMARY KEY AUTOINCREMENT, album_id INTEGER, user_id INTEGER, action TEXT CHECK(action IN ("archive", "unarchive")), action_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (album_id) REFERENCES albums (album_id), FOREIGN KEY (user_id) REFERENCES users (user_id))')
         
         self.conn.commit()
@@ -148,6 +157,27 @@ class Database:
         query += " ORDER BY created_at DESC"
         
         return self.cursor.execute(query, (user_id,)).fetchall()
+
+    # ========== ЛІЧИЛЬНИКИ ДЛЯ ЛІМІТІВ ==========
+
+    def count_personal_albums(self, user_id, include_archived: bool = False) -> int:
+        """Кількість персональних (не спільних) альбомів користувача."""
+        query = "SELECT COUNT(*) FROM albums WHERE user_id = ? AND is_shared = 0"
+        params = [user_id]
+        if not include_archived:
+            query += " AND is_archived = 0"
+        return self.cursor.execute(query, tuple(params)).fetchone()[0]
+
+    def count_owned_shared_albums(self, user_id, include_archived: bool = False) -> int:
+        """
+        Кількість спільних альбомів, де користувач є власником (owner).
+        В БД власник зберігається в `albums.user_id`, а `is_shared=1`.
+        """
+        query = "SELECT COUNT(*) FROM albums WHERE user_id = ? AND is_shared = 1"
+        params = [user_id]
+        if not include_archived:
+            query += " AND is_archived = 0"
+        return self.cursor.execute(query, tuple(params)).fetchone()[0]
 
     def make_album_shared(self, album_id: int, owner_id: int):
         """Перетворити особистий альбом на спільний (власник додається автоматично)"""
@@ -431,6 +461,12 @@ class Database:
             SET is_premium = 0, premium_until = NULL
             WHERE user_id = ?
         ''', (user_id,))
+        # Також вимикаємо "активні" записи видачі Premium,
+        # щоб наступна перевірка стартувала з початку.
+        self.cursor.execute(
+            "UPDATE premium_subscriptions SET is_active = 0 WHERE user_id = ? AND is_active = 1",
+            (user_id,),
+        )
         self.conn.commit()
     
     def check_premium(self, user_id):

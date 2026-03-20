@@ -194,6 +194,11 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     ud = context.user_data
 
+    # Якщо користувач у адмін-режимі, не показуємо головне меню у фолбеку,
+    # щоб reply keyboard адміна не перекривався.
+    if ud.get("awaiting_admin_password") or ud.get("is_admin"):
+        return
+
     # Список кнопок головного меню
     main_menu_buttons = ["📷 Мої альбоми", "👥 Спільні альбоми", "📝 Мої нотатки", "🤝 Спільні нотатки", "⚙️ Налаштування"]
 
@@ -295,13 +300,14 @@ async def create_album_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # Перевіряємо ліміти (особисті альбоми: максимум 3 без Premium)
     user_id = query.from_user.id
     if not helpers.check_user_limit(db, user_id, 'albums'):
-        await query.edit_message_text(
-            "❌ Ви досягли ліміту безкоштовних особистих альбомів (3).\n\n"
-            "Отримайте Premium, щоб збільшити ліміт."
+        keyboard = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("💎 Отримати Premium", callback_data="premium_info")]]
         )
-        fake_update = update
-        fake_update.message = query.message
-        await show_premium_menu(fake_update, context)
+        await query.edit_message_text(
+            "❌ Ліміт безкоштовних альбомів досягнуто (3).\n\n"
+            "Щоб зняти обмеження — потрібно отримати Premium.",
+            reply_markup=keyboard,
+        )
         return
     
     # Запитуємо назву альбому
@@ -1159,6 +1165,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Головний обробник всіх callback запитів"""
     query = update.callback_query
     data = query.data
+
+    # Меню Premium (кнопка в налаштуваннях + кнопки з повідомлень про ліміти)
+    if data == "premium_info":
+        from premium import show_premium_menu
+        await show_premium_menu(update, context)
+        return
     
     # Обробляємо різні callback_data
     if data == "create_album":
@@ -1406,6 +1418,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif data == "admin_premium":
         await admin_premium(update, context)
+
+    elif data == "admin_premium_add_link":
+        await admin_premium_add_link(update, context)
     
     elif data == "admin_broadcast":
         await admin_broadcast(update, context)
@@ -1560,12 +1575,59 @@ async def admin_premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    text = "💎 **Управління Premium**\n\nФункція в розробці"
-    
-    keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="admin_back")]]
+    user_id = query.from_user.id
+    if user_id not in ADMIN_IDS:
+        await query.edit_message_text("⛔ Немає доступу.")
+        return
+
+    channels = db.cursor.execute(
+        "SELECT id, link, title FROM premium_channels ORDER BY id ASC"
+    ).fetchall()
+
+    text_lines = ["💎 **Управління Premium**\n"]
+
+    if not channels:
+        text_lines.append("Поки що немає доданих Premium-каналів.\n")
+    else:
+        text_lines.append("Діючі канали:\n")
+        for ch in channels:
+            title = (ch["title"] or "").strip()
+            if title:
+                text_lines.append(f"- {ch['id']}: {title} ({ch['link']})")
+            else:
+                text_lines.append(f"- {ch['id']}: {ch['link']}")
+
+    text_lines.append("\nНатисніть кнопку нижче, щоб додати новий канал.")
+    text = "\n".join(text_lines)
+
+    keyboard = [
+        [InlineKeyboardButton("➕ Додати посилання", callback_data="admin_premium_add_link")]
+    ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+
+    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+
+
+async def admin_premium_add_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Початок послідовного додавання link -> title (Premium channels)."""
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+    if user_id not in ADMIN_IDS:
+        await query.edit_message_text("⛔ Немає доступу.")
+        return
+
+    context.user_data["admin_premium_awaiting_link"] = True
+    context.user_data.pop("admin_premium_pending_link", None)
+    context.user_data["admin_premium_awaiting_title"] = False
+
+    await query.edit_message_text(
+        "1) Надішліть link Premium-каналу.\n"
+        "Підійде `@username` або `t.me/username`.\n\n"
+        "Натисніть /admin ще раз, якщо заплутаєтесь, або просто надішліть посилання.",
+        reply_markup=None,
+    )
 
 async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Масові розсилки"""

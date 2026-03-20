@@ -10,6 +10,7 @@ ADMIN_PASSWORD = "123"
 ADMIN_MENU = ReplyKeyboardMarkup([
     [KeyboardButton("🔗 Канали Premium")],
     [KeyboardButton("📊 Статистика")],
+    [KeyboardButton("💎 Управління Premium")],
     [KeyboardButton("📨 Розсилка")],
     [KeyboardButton("◀️ Вийти з адмін‑панелі")],
 ], resize_keyboard=True)
@@ -44,51 +45,134 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if not ud.get("is_admin"):
         return False
 
-    # ----- КАНАЛИ PREMIUM -----
-    if text == "🔗 Канали Premium":
-        channels = db.cursor.execute("SELECT * FROM premium_channels").fetchall()
-        if not channels:
-            await update.message.reply_text("🔗 Список каналів пустий.")
-        else:
-            lines = ["🔗 **Канали Premium:**"]
-            for ch in channels:
-                lines.append(f"- {ch['id']}: {ch['title'] or ''} {ch['link']}")
-            await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    # Видалення Premium-каналу командою: `del ID`
+    if text.startswith("del "):
+        try:
+            cid = int(text.split()[1])
+        except Exception:
+            await update.message.reply_text("❌ Формат: del ID (наприклад: del 1)")
+            return True
 
-        await update.message.reply_text(
-            "📝 Надішліть новий канал у форматі:\n"
-            "`link || title`\n"
-            "або `del ID` щоб видалити.",
-            parse_mode="Markdown"
-        )
-        ud["admin_in_channels"] = True
+        db.cursor.execute("DELETE FROM premium_channels WHERE id = ?", (cid,))
+        db.conn.commit()
+        await update.message.reply_text("✅ Канал видалено (якщо існував).")
         return True
 
-    if ud.get("admin_in_channels"):
-        if text.startswith("del "):
-            try:
-                cid = int(text.split()[1])
-                db.cursor.execute("DELETE FROM premium_channels WHERE id = ?", (cid,))
-                db.conn.commit()
-                await update.message.reply_text("✅ Канал видалено.")
-            except Exception as e:
-                await update.message.reply_text(f"❌ Помилка: {e}")
-            ud["admin_in_channels"] = False
+    if text == "💎 Управління Premium":
+        # Тут просто підказка: керування Premium-каналами робиться через "🔗 Канали Premium"
+        await update.message.reply_text(
+            "Керування Premium-каналами відкрий через пункт «🔗 Канали Premium».\n"
+            "Там показуються діючі посилання і є кнопка «➕ Додати посилання»."
+        )
+        return True
+
+    # ===== Premium канали (послідовне додавання: link -> title) =====
+    if ud.get("admin_premium_awaiting_link"):
+        cancel_words = {"❌ Скасувати", "◀️ Назад", "/cancel", "cancel"}
+        if (text or "").strip() in cancel_words:
+            ud["admin_premium_awaiting_link"] = False
+            ud["admin_premium_awaiting_title"] = False
+            ud.pop("admin_premium_pending_link", None)
+            await update.message.reply_text("Скасовано.")
             return True
+
+        link = (text or "").strip()
+        if not link:
+            await update.message.reply_text("Посилання порожнє. Надішліть ще раз.")
+            return True
+
+        ud["admin_premium_pending_link"] = link
+        ud["admin_premium_awaiting_link"] = False
+        ud["admin_premium_awaiting_title"] = True
+
+        await update.message.reply_text(
+            "2) Тепер напишіть назву каналу, яка буде відображатись в меню Premium.\n"
+            "Наприклад: Новини/Офіційні оновлення/Група підтримки."
+        )
+        return True
+
+    if ud.get("admin_premium_awaiting_title"):
+        cancel_words = {"❌ Скасувати", "◀️ Назад", "/cancel", "cancel"}
+        if (text or "").strip() in cancel_words:
+            ud["admin_premium_awaiting_title"] = False
+            ud["admin_premium_awaiting_link"] = False
+            ud.pop("admin_premium_pending_link", None)
+            await update.message.reply_text("Скасовано.")
+            return True
+
+        title = (text or "").strip()
+        link = ud.get("admin_premium_pending_link")
+        if not link:
+            ud["admin_premium_awaiting_title"] = False
+            await update.message.reply_text("❌ Знайшли помилку в стані. Спробуйте додати заново через кнопку.")
+            return True
+
+        if not title:
+            await update.message.reply_text("Назва порожня. Надішліть ще раз.")
+            return True
+
+        db.cursor.execute(
+            "INSERT INTO premium_channels (link, title) VALUES (?, ?)",
+            (link, title),
+        )
+        db.conn.commit()
+
+        ud["admin_premium_awaiting_title"] = False
+        ud.pop("admin_premium_pending_link", None)
+
+        # Покажемо список знову (щоб адмін бачив діючі посилання)
+        channels = db.cursor.execute(
+            "SELECT id, link, title FROM premium_channels ORDER BY id ASC"
+        ).fetchall()
+
+        if not channels:
+            await update.message.reply_text("✅ Додано, але зараз список порожній (очікувано не повинно бути).")
         else:
-            try:
-                link, title = [p.strip() for p in text.split("||", 1)]
-            except ValueError:
-                await update.message.reply_text("❌ Формат: `link || title`", parse_mode="Markdown")
-                return True
-            db.cursor.execute(
-                "INSERT INTO premium_channels (link, title) VALUES (?, ?)",
-                (link, title)
+            lines = ["✅ Додано Premium-канал:", ""]
+            for ch in channels:
+                t = (ch["title"] or "").strip()
+                if t:
+                    lines.append(f"- {ch['id']}: {t} ({ch['link']})")
+                else:
+                    lines.append(f"- {ch['id']}: {ch['link']}")
+
+            # Інлайн-кнопка для повторного додавання
+            from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+
+            keyboard = [[InlineKeyboardButton("➕ Додати посилання", callback_data="admin_premium_add_link")]]
+            await update.message.reply_text(
+                "\n".join(lines),
+                reply_markup=InlineKeyboardMarkup(keyboard),
             )
-            db.conn.commit()
-            await update.message.reply_text("✅ Канал додано.")
-            ud["admin_in_channels"] = False
-            return True
+
+        return True
+
+    # ----- КАНАЛИ PREMIUM -----
+    if text == "🔗 Канали Premium":
+        channels = db.cursor.execute(
+            "SELECT id, link, title FROM premium_channels ORDER BY id ASC"
+        ).fetchall()
+
+        if not channels:
+            await update.message.reply_text("Поки що немає доданих Premium-каналів.")
+        else:
+            lines = ["Діючі Premium-канали:\n"]
+            for ch in channels:
+                t = (ch["title"] or "").strip()
+                if t:
+                    lines.append(f"- {ch['id']}: {t} ({ch['link']})")
+                else:
+                    lines.append(f"- {ch['id']}: {ch['link']}")
+            await update.message.reply_text("\n".join(lines))
+
+        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+
+        keyboard = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("➕ Додати посилання", callback_data="admin_premium_add_link")]]
+        )
+        await update.message.reply_text("Натисніть кнопку, щоб додати новий канал:", reply_markup=keyboard)
+        await update.message.reply_text("Щоб видалити канал — напишіть: `del ID` (наприклад: del 3).", parse_mode="Markdown")
+        return True
 
     # ----- ВИХІД -----
     if text == "◀️ Вийти з адмін‑панелі":

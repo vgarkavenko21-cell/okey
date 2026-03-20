@@ -2,6 +2,8 @@ from datetime import datetime
 import json
 from typing import Optional
 
+from config import FREE_LIMITS
+
 def format_date(date_str):
     """Форматування дати для відображення"""
     if not date_str:
@@ -32,21 +34,19 @@ def check_user_limit(db, user_id, limit_type):
     - Без Premium: максимум 3 особистих альбоми та 3 спільних (де користувач — owner).
     - З Premium: лімітів немає.
     """
-    # Перевіряємо чи користувач Premium
-    user = db.get_user(user_id)
-    if user and user['is_premium']:
+    # Перевіряємо чи користувач має активний Premium (з урахуванням premium_until)
+    if db.check_premium(user_id):
         return True  # Для Premium лімітів немає
 
     if limit_type == 'albums':
+        personal_limit = FREE_LIMITS.get("albums", 3)
         personal = db.count_personal_albums(user_id)
-        owned_shared = db.count_owned_shared_albums(user_id)
-        # Створення особистого альбому обмежується тільки особистими,
-        # але в більшості викликів нам важливо не перевищити сумарний ліміт типу.
-        return personal < 3
+        return personal < personal_limit
 
     if limit_type == 'shared_albums':
+        shared_limit = FREE_LIMITS.get("shared_albums", 3)
         owned_shared = db.count_owned_shared_albums(user_id)
-        return owned_shared < 3
+        return owned_shared < shared_limit
 
     # Для інших ресурсів поки що лімітів немає
     return True
