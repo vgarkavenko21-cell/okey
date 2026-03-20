@@ -15,6 +15,7 @@ PREMIUM_MENU = InlineKeyboardMarkup(
     [
         [InlineKeyboardButton("🔗 Підписатися на канали", callback_data="premium_subscribe")],
         [InlineKeyboardButton("💳 Купити Premium", callback_data="premium_buy")],
+        [InlineKeyboardButton("◀️ Назад", callback_data="premium_back_to_settings")],
     ]
 )
 
@@ -91,6 +92,39 @@ async def _get_user_channel_status(
 def _premium_expiry_str(days: int = 7) -> str:
     expires = datetime.now() + timedelta(days=days)
     return expires.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _normalize_channel_url(link: Optional[str]) -> Optional[str]:
+    """
+    Нормалізує link з БД у валідний URL для telegram InlineKeyboardButton/answer(url=...).
+    Приймає:
+    - '@username' -> 'https://t.me/username'
+    - 't.me/username' -> 'https://t.me/username'
+    - 'https://t.me/username' -> лишає як є (зберігає query/fragment, якщо були)
+    """
+    raw = (link or "").strip()
+    if not raw:
+        return None
+
+    # приберемо scheme для подальшого нормалізатора
+    raw_no_scheme = re.sub(r"^https?://", "", raw, flags=re.IGNORECASE)
+
+    # @username
+    if raw_no_scheme.startswith("@"):
+        username = raw_no_scheme[1:].strip()
+        return f"https://t.me/{username}"
+
+    # t.me/username...
+    m = re.match(r"^t\.me/(.+)$", raw_no_scheme, flags=re.IGNORECASE)
+    if m:
+        return f"https://t.me/{m.group(1)}"
+
+    # Якщо вже повний URL - повертаємо як є
+    if raw.lower().startswith("http://") or raw.lower().startswith("https://"):
+        return raw
+
+    # fallback: повертаємо як є (може бути вже валідним URL)
+    return raw
 
 
 def _get_latest_channel_grant_row(user_id: int) -> Optional[dict[str, Any]]:
@@ -223,8 +257,26 @@ async def show_premium_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_premium = db.check_premium(user_id)
 
     if is_premium:
+        user = db.get_user(user_id)
+        premium_until_raw = user["premium_until"] if user and "premium_until" in user.keys() else None
+        premium_until_date = None
+        days_left = None
+        if premium_until_raw:
+            try:
+                premium_until_dt = datetime.strptime(premium_until_raw, "%Y-%m-%d %H:%M:%S")
+                premium_until_date = premium_until_dt.strftime("%Y-%m-%d")
+                # Рахуємо залишок у днях без часу (як просили в UI).
+                days_left = max((premium_until_dt.date() - datetime.now().date()).days, 0)
+            except Exception:
+                premium_until_date = None
+
+        until_line = ""
+        if premium_until_date is not None and days_left is not None:
+            until_line = f"Активний до: {premium_until_date} ({days_left} дн.)\n\n"
+
         text = (
             "💎 **Premium активний**\n\n"
+            f"{until_line}"
             "Ліміти зняті. Ви можете створювати більше альбомів.\n\n"
             "Якщо відписатись від потрібних каналів, Premium буде анульовано."
         )
@@ -257,20 +309,30 @@ async def show_premium_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_premium_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обробник inline‑кнопок преміуму (callback_data починається з 'premium_')."""
     query = update.callback_query
-    await query.answer()
     data = query.data
 
     if data == "premium_info":
+        await query.answer()
         # Відкриваємо меню Premium з кнопок у налаштуваннях та з повідомлень про ліміти
         await show_premium_menu(update, context)
         return
 
+    if data == "premium_back_to_settings":
+        await query.answer()
+        from main import show_settings
+        await show_settings(update, context)
+        return
+
     if data == "premium_subscribe":
+        await query.answer()
         channels = _get_premium_channels_rows()
         if not channels:
             await query.edit_message_text(
                 "🔗 Посилань на Premium-канали поки що немає.\n\n"
-                "Адміністратор може додати їх в адмін‑панелі."
+                "Адміністратор може додати їх в адмін‑панелі.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("◀️ Назад", callback_data="premium_info")]
+                ]),
             )
             return
 
@@ -286,6 +348,7 @@ async def handle_premium_callback(update: Update, context: ContextTypes.DEFAULT_
         keyboard.append(
             [InlineKeyboardButton("✅ Перевірити підписку", callback_data="premium_check")]
         )
+        keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="premium_info")])
 
         await query.edit_message_text(
             "🔗 **Premium-канали**\n\n"
@@ -317,13 +380,18 @@ async def handle_premium_callback(update: Update, context: ContextTypes.DEFAULT_
         title = (row["title"] or "").strip() if row and row["title"] is not None else ""
         title = title or f"Канал {ch_id}"
         link = row["link"] if row and row["link"] is not None else None
+        url = _normalize_channel_url(link)
 
-        if link:
+        # Обов'язково відповідаємо на callback, щоб клієнт зняв "завантаження"
+        await query.answer()
+
+        # Показуємо повідомлення з URL-кнопкою (як ти просив "поверни як було")
+        if url:
             await context.bot.send_message(
                 chat_id=query.message.chat_id,
                 text=f"Відкрийте канал: {title}",
                 reply_markup=InlineKeyboardMarkup(
-                    [[InlineKeyboardButton("Відкрити канал", url=link)]]
+                    [[InlineKeyboardButton("Відкрити канал", url=url)]]
                 ),
                 parse_mode="Markdown",
             )
@@ -335,6 +403,7 @@ async def handle_premium_callback(update: Update, context: ContextTypes.DEFAULT_
         return
 
     if data == "premium_check":
+        await query.answer()
         # Підтверджуємо Premium через кількість натискань.
         channels = _get_premium_channels_rows()
         channel_ids = [int(ch["id"]) for ch in channels]
@@ -361,13 +430,20 @@ async def handle_premium_callback(update: Update, context: ContextTypes.DEFAULT_
                     [
                         [InlineKeyboardButton("🔗 Підписатися на канали", callback_data="premium_subscribe")],
                         [InlineKeyboardButton("💳 Купити Premium", callback_data="premium_buy")],
+                        [InlineKeyboardButton("◀️ Назад", callback_data="premium_info")],
                     ]
                 ),
             )
             return
 
         expires_at = _premium_expiry_str(days=7)
-        db.set_premium(query.from_user.id, expires_at=expires_at)
+        # Фіксуємо Premium як "через підписку" (у нас це click-based активація підписки).
+        db.set_premium(
+            query.from_user.id,
+            expires_at=expires_at,
+            subscription_type="channel",
+            channel_id="all",
+        )
         db.cursor.execute(
             "DELETE FROM premium_channel_clicks WHERE user_id = ?",
             (query.from_user.id,),
@@ -378,9 +454,13 @@ async def handle_premium_callback(update: Update, context: ContextTypes.DEFAULT_
         return
 
     if data == "premium_buy":
+        await query.answer()
         await query.edit_message_text(
             "💳 Купівля Premium тимчасово недоступна.\n\n"
-            "Щоб зняти ліміти — підпишіться на Premium-канали (кнопка «Підписатися на канали»)."
+            "Щоб зняти ліміти — підпишіться на Premium-канали (кнопка «Підписатися на канали»).",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("◀️ Назад", callback_data="premium_info")]
+            ]),
         )
         return
 

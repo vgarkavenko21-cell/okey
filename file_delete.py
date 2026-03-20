@@ -46,6 +46,7 @@ async def send_file_for_deletion(update: Update, context: ContextTypes.DEFAULT_T
 # Повна заміна функції у Файлі 2
 async def handle_delete_menu_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, album_id: int):
     """Обробка кнопок меню видалення"""
+    ud = context.user_data
     if text == "Надіслати: Весь альбом":
         files = db.get_album_files(album_id)
         await update.message.reply_text(f"📤 Надсилаю всі файли ({len(files)}) для видалення...")
@@ -80,7 +81,8 @@ async def handle_delete_menu_buttons(update: Update, context: ContextTypes.DEFAU
             # 1. Вимикаємо ВСІ стани (додаткове меню, видалення тощо)
             states_to_reset = [
                 'in_additional_menu', 'in_delete_menu', 'shared_in_delete_menu',
-                'delete_awaiting_recent', 'delete_awaiting_first', 'delete_awaiting_range'
+                'delete_awaiting_recent', 'delete_awaiting_first', 'delete_awaiting_range',
+                'delete_awaiting_date', 'delete_action', 'awaiting_delete_input'
             ]
             for state in states_to_reset:
                 ud.pop(state, None)

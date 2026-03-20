@@ -103,6 +103,17 @@ class Database:
         self.cursor.execute('CREATE TABLE IF NOT EXISTS shared_notes (id INTEGER PRIMARY KEY AUTOINCREMENT, note_id INTEGER NOT NULL, user_id INTEGER NOT NULL, access_level TEXT CHECK(access_level IN ("view", "edit")) DEFAULT "view", added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (note_id) REFERENCES notes (note_id) ON DELETE CASCADE, FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE, UNIQUE(note_id, user_id))')
         self.cursor.execute('CREATE TABLE IF NOT EXISTS premium_subscriptions (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, subscription_type TEXT CHECK(subscription_type IN ("channel", "paid", "manual")), channel_id TEXT, granted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, expires_at TIMESTAMP, is_active BOOLEAN DEFAULT 1, FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE)')
         self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS premium_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                event_type TEXT CHECK(event_type IN ("grant_paid", "grant_channel", "grant_manual", "remove")) NOT NULL,
+                subscription_type TEXT,
+                channel_id TEXT,
+                event_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
+            )
+        ''')
+        self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS premium_channel_clicks (
                 user_id INTEGER NOT NULL,
                 channel_id INTEGER NOT NULL,
@@ -445,27 +456,88 @@ class Database:
     
     # ========== МЕТОДИ ДЛЯ ПРЕМІУМ ==========
     
-    def set_premium(self, user_id, expires_at=None):
-        """Встановити преміум статус"""
-        self.cursor.execute('''
-            UPDATE users 
+    def set_premium(
+        self,
+        user_id,
+        expires_at=None,
+        subscription_type: str | None = None,
+        channel_id: str | None = None,
+    ):
+        """
+        Встановити преміум статус.
+        Якщо `subscription_type` задано — також створюємо запис в `premium_subscriptions` та лог `premium_events`.
+        """
+        self.cursor.execute(
+            '''
+            UPDATE users
             SET is_premium = 1, premium_until = ?
             WHERE user_id = ?
-        ''', (expires_at, user_id))
+            ''',
+            (expires_at, user_id),
+        )
+
+        if subscription_type:
+            # вимикаємо попередні активні преміуми
+            self.cursor.execute(
+                "UPDATE premium_subscriptions SET is_active = 0 WHERE user_id = ? AND is_active = 1",
+                (user_id,),
+            )
+            self.cursor.execute(
+                '''
+                INSERT INTO premium_subscriptions (user_id, subscription_type, channel_id, granted_at, expires_at, is_active)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, 1)
+                ''',
+                (user_id, subscription_type, channel_id, expires_at),
+            )
+
+            # лог події
+            if subscription_type == "paid":
+                event_type = "grant_paid"
+            elif subscription_type == "channel":
+                event_type = "grant_channel"
+            else:
+                event_type = "grant_manual"
+
+            self.cursor.execute(
+                '''
+                INSERT INTO premium_events (user_id, event_type, subscription_type, channel_id, event_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ''',
+                (user_id, event_type, subscription_type, channel_id),
+            )
+
         self.conn.commit()
     
     def remove_premium(self, user_id):
-        """Забрати преміум статус"""
-        self.cursor.execute('''
-            UPDATE users 
+        """Забрати преміум статус (і залогувати подію)."""
+        active_sub = self.cursor.execute(
+            "SELECT subscription_type, channel_id FROM premium_subscriptions WHERE user_id = ? AND is_active = 1 ORDER BY granted_at DESC LIMIT 1",
+            (user_id,),
+        ).fetchone()
+
+        sub_type = active_sub["subscription_type"] if active_sub else None
+        ch_id = active_sub["channel_id"] if active_sub else None
+
+        self.cursor.execute(
+            '''
+            UPDATE users
             SET is_premium = 0, premium_until = NULL
             WHERE user_id = ?
-        ''', (user_id,))
-        # Також вимикаємо "активні" записи видачі Premium,
-        # щоб наступна перевірка стартувала з початку.
+            ''',
+            (user_id,),
+        )
+
         self.cursor.execute(
             "UPDATE premium_subscriptions SET is_active = 0 WHERE user_id = ? AND is_active = 1",
             (user_id,),
+        )
+
+        self.cursor.execute(
+            '''
+            INSERT INTO premium_events (user_id, event_type, subscription_type, channel_id, event_at)
+            VALUES (?, 'remove', ?, ?, CURRENT_TIMESTAMP)
+            ''',
+            (user_id, sub_type, ch_id),
         )
         self.conn.commit()
     

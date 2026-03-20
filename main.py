@@ -1,5 +1,6 @@
 import logging
 import asyncio
+from datetime import datetime, timedelta
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -185,6 +186,37 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup,
         parse_mode='Markdown'
     )
+
+
+async def show_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показати адмін-меню (для callback)."""
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        return
+
+    keyboard = [
+        [InlineKeyboardButton("📊 Статистика", callback_data="admin_stats")],
+        [InlineKeyboardButton("👥 Користувачі", callback_data="admin_users")],
+        [InlineKeyboardButton("💎 Premium / Управління", callback_data="admin_premium")],
+        [InlineKeyboardButton("🔗 Канали Premium", callback_data="admin_premium_channels_manage")],
+        [InlineKeyboardButton("📢 Масові розсилки", callback_data="admin_broadcast")],
+        [InlineKeyboardButton("⚙️ Налаштування бота", callback_data="admin_settings")],
+        [InlineKeyboardButton("📋 Логи", callback_data="admin_logs")],
+    ]
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    if update.callback_query:
+        await update.callback_query.message.reply_text(
+            "🔐 **Адмін-панель**\n\nОберіть дію:",
+            reply_markup=reply_markup,
+            # без Markdown, щоб імена/нікнейми не ламали розмітку
+        )
+    else:
+        await update.message.reply_text(
+            "🔐 **Адмін-панель**\n\nОберіть дію:",
+            reply_markup=reply_markup,
+            # без Markdown, щоб імена/нікнейми не ламали розмітку
+        )
 
 # ========== ОБРОБНИК ТЕКСТОВИХ ПОВІДОМЛЕНЬ (ГОЛОВНЕ МЕНЮ) ==========
 
@@ -691,18 +723,24 @@ async def handle_album_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
         elif text == "◀️ Назад до альбому":
             # 1. Глобально чистимо ВСІ прапорці, які стосуються видалення та дод. опцій
             states_to_reset = [
-                'in_additional_menu', 
-                'in_delete_menu', 
-                'delete_awaiting_recent', 
+                'in_additional_menu',
+                'in_delete_menu',
+                'delete_awaiting_recent',
                 'delete_awaiting_first',
-                'delete_awaiting_range', 
-                'delete_awaiting_date'
+                'delete_awaiting_range',
+                'delete_awaiting_date',
+                'delete_action',
+                'awaiting_delete_input',
+                'awaiting_recent_count',
+                'awaiting_first_count',
+                'awaiting_range',
+                'awaiting_date'
             ]
             for state in states_to_reset:
-                ud.pop(state, None)
+                context.user_data.pop(state, None)
 
             # 2. Дістаємо ID альбому (спробуй обидва варіанти, де він міг бути збережений)
-            album_id = ud.get('current_album') or ud.get('delete_menu_album')
+            album_id = context.user_data.get('current_album') or context.user_data.get('delete_menu_album')
 
             if album_id:
                 # Повертаємо звичайну клавіатуру альбому
@@ -1166,10 +1204,242 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
 
+    # Якщо адмін чекає вводу тексту (старі callback) — не блокуємо навігацію
+    if context.user_data.get("admin_premium_input"):
+        allow_prefixes = ("admin_premium_active_list_page_",)
+        allow_callbacks = {"admin_back", "admin_premium", "admin_premium_channels_manage"}
+        if not (data in allow_callbacks or data.startswith(allow_prefixes)):
+            await query.answer("Спочатку введіть ID/@username або натисніть «Переглянути всіх Premium».")
+            return
+    # Якщо адмін чекає вводу кількості днів — інші callback ігноруємо
+    if context.user_data.get("admin_premium_grant_days"):
+        allow_prefixes = ("admin_premium_active_list_page_",)
+        allow_callbacks = {
+            "admin_back",
+            "admin_premium",
+            "admin_premium_channels_manage",
+            "admin_premium_cancel_grant_days",
+        }
+        if not (data in allow_callbacks or data.startswith(allow_prefixes)):
+            await query.answer("Спочатку введіть кількість днів або скасуйте дію.")
+            return
+    if context.user_data.get("admin_stats_custom_phase") and data not in {"admin_back"}:
+        await query.answer("Спочатку введіть дати для свого періоду.")
+        return
+
     # Меню Premium (кнопка в налаштуваннях + кнопки з повідомлень про ліміти)
     if data == "premium_info":
         from premium import show_premium_menu
         await show_premium_menu(update, context)
+        return
+
+    # Адмін-меню бек
+    if data == "admin_back":
+        await show_admin_menu(update, context)
+        return
+
+    # Управління Premium каналами
+    if data == "admin_premium_channels_manage":
+        # відкриваємо вже існуюче меню через admin_premium_add_link/список
+        await admin_premium_channels_manage(update, context)
+        return
+
+    # ---- Admin: statistics ranges ----
+    if data == "admin_stats_range_all":
+        await admin_stats_show_period(update, context, None, datetime.now())
+        return
+    if data == "admin_stats_range_day":
+        await admin_stats_show_period(update, context, datetime.now() - timedelta(days=1), datetime.now())
+        return
+    if data == "admin_stats_range_week":
+        await admin_stats_show_period(update, context, datetime.now() - timedelta(weeks=1), datetime.now())
+        return
+    if data == "admin_stats_range_month":
+        await admin_stats_show_period(update, context, datetime.now() - timedelta(days=30), datetime.now())
+        return
+    if data == "admin_stats_range_custom":
+        context.user_data["admin_stats_custom_phase"] = "a"
+        await query.edit_message_text("✍️ Введіть дату A у форматі `YYYY-MM-DD`:")
+        return
+
+    # ---- Admin: users list ----
+    if data == "admin_users_send_all":
+        await admin_users_send_all(update, context)
+        return
+
+    # ---- Admin: premium list / actions ----
+    if data.startswith("admin_premium_active_list_page_"):
+        rest = data[len("admin_premium_active_list_page_") :]
+        # rest: "0" OR "{mode}_{page}"
+        parts = rest.split("_")
+        if len(parts) == 1:
+            mode = "view"
+            page_str = parts[0]
+        else:
+            page_str = parts[-1]
+            mode = "_".join(parts[:-1])
+
+        try:
+            page = int(page_str)
+        except Exception:
+            page = 0
+
+        await admin_premium_active_list_page(update, context, page, mode=mode)
+        return
+
+    if data.startswith("admin_premium_remove_uid_"):
+        if query.from_user.id not in ADMIN_IDS:
+            return
+        # Формат: admin_premium_remove_uid_{uid}_page_{page}
+        rest = data[len("admin_premium_remove_uid_") :]
+        page = 0
+        if "_page_" in rest:
+            uid_str, page_str = rest.split("_page_", 1)
+            try:
+                page = int(page_str)
+            except Exception:
+                page = 0
+        else:
+            uid_str = rest
+
+        try:
+            uid = int(uid_str)
+        except Exception:
+            uid = None
+
+        if uid is not None:
+            db.remove_premium(uid)
+
+        await admin_premium_active_list_page(update, context, page, mode="remove")
+        return
+
+    if data == "admin_premium_cancel_grant_days":
+        if query.from_user.id not in ADMIN_IDS:
+            return
+        ud = context.user_data.get("admin_premium_grant_days") or {}
+        page = ud.get("page", 0)
+        action = ud.get("action")
+        context.user_data.pop("admin_premium_grant_days", None)
+        mode = "view"
+        if action == "grant_paid":
+            mode = "grant_paid"
+        elif action == "grant_channel":
+            mode = "grant_channel"
+        await admin_premium_active_list_page(
+            update,
+            context,
+            int(page) if isinstance(page, int) else 0,
+            mode=mode,
+        )
+        return
+
+    if data.startswith("admin_premium_grant_paid_uid_"):
+        if query.from_user.id not in ADMIN_IDS:
+            return
+        rest = data[len("admin_premium_grant_paid_uid_") :]
+        page = 0
+        if "_page_" in rest:
+            uid_str, page_str = rest.split("_page_", 1)
+            try:
+                page = int(page_str)
+            except Exception:
+                page = 0
+        else:
+            uid_str = rest
+
+        try:
+            uid = int(uid_str)
+        except Exception:
+            uid = None
+
+        if uid is not None:
+            # просимо кількість днів
+            context.user_data["admin_premium_grant_days"] = {
+                "action": "grant_paid",
+                "uid": uid,
+                "page": page,
+            }
+            await query.edit_message_text(
+                "💳 Введіть кількість днів для видачі paid Premium (наприклад: 7):",
+                reply_markup=InlineKeyboardMarkup(
+                    [[InlineKeyboardButton("❌ Скасувати", callback_data="admin_premium_cancel_grant_days")]]
+                ),
+            )
+            return
+
+        await admin_premium_active_list_page(update, context, page)
+        return
+
+    if data.startswith("admin_premium_grant_channel_uid_"):
+        if query.from_user.id not in ADMIN_IDS:
+            return
+        rest = data[len("admin_premium_grant_channel_uid_") :]
+        page = 0
+        if "_page_" in rest:
+            uid_str, page_str = rest.split("_page_", 1)
+            try:
+                page = int(page_str)
+            except Exception:
+                page = 0
+        else:
+            uid_str = rest
+
+        try:
+            uid = int(uid_str)
+        except Exception:
+            uid = None
+
+        if uid is not None:
+            # просимо кількість днів
+            context.user_data["admin_premium_grant_days"] = {
+                "action": "grant_channel",
+                "uid": uid,
+                "page": page,
+            }
+            await query.edit_message_text(
+                "🔗 Введіть кількість днів для видачі sub Premium (channel) (наприклад: 7):",
+                reply_markup=InlineKeyboardMarkup(
+                    [[InlineKeyboardButton("❌ Скасувати", callback_data="admin_premium_cancel_grant_days")]]
+                ),
+            )
+            return
+
+        await admin_premium_active_list_page(update, context, page)
+        return
+
+    if data == "admin_premium_input_remove":
+        if query.from_user.id not in ADMIN_IDS:
+            return
+        # Старий callback: більше не використовуємо ввід текстом.
+        # Відкриваємо список активних Premium, де є кнопки дій.
+        context.user_data.pop("admin_premium_input", None)
+        await admin_premium_active_list_page(update, context, 0)
+        return
+
+    if data == "admin_premium_input_grant_paid":
+        if query.from_user.id not in ADMIN_IDS:
+            return
+        # Новий сценарій: вводимо конкретного користувача вручну (ID/@username).
+        context.user_data["admin_premium_input"] = {"action": "grant_paid"}
+        await query.edit_message_text(
+            "💳 Видача Premium (гів)\n\n"
+            "Надішліть ID або @username користувача.\n"
+            "Далі бот запитає кількість днів.\n\n"
+            "Приклад: `123456789` або `@nickname`",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("◀️ В адмін-меню", callback_data="admin_back")],
+                [InlineKeyboardButton("👥 Переглянути всіх Premium", callback_data="admin_premium_active_list_page_0")],
+            ]),
+        )
+        return
+
+    if data == "admin_premium_input_grant_channel":
+        if query.from_user.id not in ADMIN_IDS:
+            return
+        # Старий callback: більше не використовуємо ввід текстом.
+        context.user_data.pop("admin_premium_input", None)
+        await admin_premium_active_list_page(update, context, 0)
         return
     
     # Обробляємо різні callback_data
@@ -1528,84 +1798,340 @@ async def return_to_album_callback(update: Update, context: ContextTypes.DEFAULT
             reply_markup=album_keyboard
         )
 
-# ========== АДМІН ФУНКЦІЇ (заглушки) ==========
+# ========== АДМІН ФУНКЦІЇ (реалізовано) ==========
+
+def _fmt_user_ref(urow):
+    username = (urow["username"] or "").strip() if urow["username"] else ""
+    if username:
+        return f"@{username}"
+    return f"ID:{urow['user_id']}"
+
+
+async def admin_stats_show_period(update: Update, context: ContextTypes.DEFAULT_TYPE, start_dt: datetime | None, end_dt: datetime | None):
+    query = update.callback_query
+    await query.answer()
+
+    # Підготовка меж
+    if start_dt is None:
+        start_str = None
+    else:
+        start_str = start_dt.strftime("%Y-%m-%d %H:%M:%S")
+    end_str = end_dt.strftime("%Y-%m-%d %H:%M:%S") if end_dt else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def _count(sql: str, params: tuple):
+        return db.cursor.execute(sql, params).fetchone()[0]
+
+    where_events = "1=1"
+    params_events: tuple = ()
+    if start_str:
+        where_events += " AND event_at >= ?"
+        params_events = (start_str,)
+    where_events += " AND event_at <= ?"
+    params_events = (*params_events, end_str)
+
+    bought = _count(
+        f"SELECT COUNT(*) FROM premium_events WHERE event_type='grant_paid' AND {where_events}",
+        params_events,
+    )
+    subs = _count(
+        f"SELECT COUNT(*) FROM premium_events WHERE event_type='grant_channel' AND {where_events}",
+        params_events,
+    )
+    removed = _count(
+        f"SELECT COUNT(*) FROM premium_events WHERE event_type='remove' AND {where_events}",
+        params_events,
+    )
+
+    # Учасники = нові користувачі за період
+    if start_str:
+        participants = db.cursor.execute(
+            "SELECT COUNT(*) FROM users WHERE registered_at >= ? AND registered_at <= ?",
+            (start_str, end_str),
+        ).fetchone()[0]
+    else:
+        participants = db.cursor.execute(
+            "SELECT COUNT(*) FROM users WHERE registered_at <= ?",
+            (end_str,),
+        ).fetchone()[0]
+
+    text = (
+        "📊 **Статистика Premium**\n\n"
+        f"Період: {start_str or 'з початку'} → {end_str}\n\n"
+        f"💳 Куплених Premium (paid): {bought}\n"
+        f"🔗 Отриманих через підписку (channel): {subs}\n"
+        f"🗑 Відписок/забрань Premium: {removed}\n"
+        f"👥 Учасників (нові реєстрації): {participants}\n"
+    )
+
+    keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="admin_stats")], [InlineKeyboardButton("◀️ В адмін-меню", callback_data="admin_back")]]
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
 
 async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Статистика для адміна"""
     query = update.callback_query
     await query.answer()
-    
-    # Отримуємо статистику з БД
-    total_users = db.cursor.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-    premium_users = db.cursor.execute("SELECT COUNT(*) FROM users WHERE is_premium = 1").fetchone()[0]
-    total_albums = db.cursor.execute("SELECT COUNT(*) FROM albums").fetchone()[0]
-    total_files = db.cursor.execute("SELECT COUNT(*) FROM files").fetchone()[0]
-    
-    text = (
-        "📊 **Статистика бота**\n\n"
-        f"👥 Всього користувачів: {total_users}\n"
-        f"💎 Premium користувачів: {premium_users}\n"
-        f"📷 Всього альбомів: {total_albums}\n"
-        f"📁 Всього файлів: {total_files}\n\n"
-    )
-    
-    keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="admin_back")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
+
+    keyboard = [
+        [InlineKeyboardButton("🕐 За весь час", callback_data="admin_stats_range_all")],
+        [InlineKeyboardButton("📅 За день", callback_data="admin_stats_range_day")],
+        [InlineKeyboardButton("📆 За тиждень", callback_data="admin_stats_range_week")],
+        [InlineKeyboardButton("🗓 За місяць", callback_data="admin_stats_range_month")],
+        [InlineKeyboardButton("✍️ Свій період", callback_data="admin_stats_range_custom")],
+        [InlineKeyboardButton("◀️ В адмін-меню", callback_data="admin_back")],
+    ]
+
     await query.edit_message_text(
-        text,
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
+        "📊 **Статистика Premium**\n\nОберіть період:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        # без Markdown
     )
+
 
 async def admin_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Управління користувачами"""
     query = update.callback_query
     await query.answer()
-    
-    text = "👥 **Управління користувачами**\n\nФункція в розробці"
-    
-    keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="admin_back")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+    # Одразу відправляємо всіх користувачів без зайвих кнопок
+    await admin_users_send_all(update, context)
+
+
+async def admin_users_send_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.from_user.id not in ADMIN_IDS:
+        return
+
+    # Беремо всіх користувачів
+    users = db.cursor.execute(
+        "SELECT user_id, username, first_name, is_premium, premium_until FROM users ORDER BY registered_at DESC"
+    ).fetchall()
+
+    lines: list[str] = []
+    chunk_size = 25
+
+    def user_status(urow):
+        uid = urow["user_id"]
+        # перевіряємо активність Premium (щоб не показувати прострочений)
+        if not urow["is_premium"] or not db.check_premium(uid):
+            return "free"
+        sub = db.cursor.execute(
+            "SELECT subscription_type FROM premium_subscriptions WHERE user_id = ? AND is_active = 1 ORDER BY granted_at DESC LIMIT 1",
+            (uid,),
+        ).fetchone()
+        st = sub["subscription_type"] if sub else None
+        if st == "paid":
+            return "paid"
+        if st == "channel":
+            return "sub"
+
+        # Legacy-дані: інферимо з premium_events
+        ev = db.cursor.execute(
+            "SELECT event_type FROM premium_events "
+            "WHERE user_id = ? AND event_type IN ('grant_paid','grant_channel') "
+            "ORDER BY event_at DESC LIMIT 1",
+            (uid,),
+        ).fetchone()
+        if not ev:
+            # дефолт: вважаємо, що це sub (щоб не показувати paid без доказів)
+            return "sub"
+        if ev["event_type"] == "grant_paid":
+            return "paid"
+        if ev["event_type"] == "grant_channel":
+            return "sub"
+        return "sub"
+
+    messages_sent = 0
+    for i, u in enumerate(users):
+        st = user_status(u)
+        name = (u["first_name"] or "").strip()
+        user_ref = _fmt_user_ref(u)
+        premium_until = (u["premium_until"] or "").strip() if u["premium_until"] else ""
+        if st == "free":
+            line = f"{user_ref} {('- ' + name) if name else ''} — free"
+        else:
+            label = "гів" if st == "paid" else "sub"
+            line = f"{user_ref} {('- ' + name) if name else ''} — {label} до {premium_until}"
+        lines.append(line)
+
+        if (i + 1) % chunk_size == 0:
+            await query.message.reply_text("\n".join(lines))
+            messages_sent += 1
+            lines = []
+
+    if lines:
+        await query.message.reply_text("\n".join(lines))
+        messages_sent += 1
+
+    # без "Готово ..." повідомлення (щоб було менше шуму)
+
 
 async def admin_premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Управління Premium"""
     query = update.callback_query
     await query.answer()
-    
-    user_id = query.from_user.id
-    if user_id not in ADMIN_IDS:
+    if query.from_user.id not in ADMIN_IDS:
         await query.edit_message_text("⛔ Немає доступу.")
+        return
+
+    # Для стабільності — тільки список активних Premium без кнопок “забрати/видати”
+    await admin_premium_active_list_page(update, context, 0)
+
+
+async def admin_premium_active_list_page(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    page: int,
+    mode: str = "view",
+):
+    query = update.callback_query
+    await query.answer()
+    if query.from_user.id not in ADMIN_IDS:
+        return
+
+    page_size = 12
+    offset = page * page_size
+
+    all_prem = db.cursor.execute(
+        "SELECT user_id FROM users WHERE is_premium = 1 ORDER BY premium_until DESC"
+    ).fetchall()
+    user_ids = [int(r["user_id"]) for r in all_prem]
+
+    # відфільтровуємо прострочені через check_premium
+    active_users: list[int] = []
+    for uid in user_ids:
+        if db.check_premium(uid):
+            active_users.append(uid)
+
+    total = len(active_users)
+    slice_ids = active_users[offset : offset + page_size]
+
+    # сформуємо текст та кнопки
+    lines: list[str] = []
+    kb_rows: list[list[InlineKeyboardButton]] = []
+
+    mode = (mode or "view").lower().strip()
+    if mode not in {"view", "remove", "grant_paid", "grant_channel"}:
+        mode = "view"
+
+    for uid in slice_ids:
+        u = db.get_user(uid)
+        if not u:
+            continue
+
+        st_row = db.cursor.execute(
+            "SELECT subscription_type FROM premium_subscriptions WHERE user_id = ? AND is_active = 1 ORDER BY granted_at DESC LIMIT 1",
+            (uid,),
+        ).fetchone()
+        st = st_row["subscription_type"] if st_row else None
+
+        if st == "paid":
+            label = "гів"
+        elif st == "channel":
+            label = "sub"
+        else:
+            # Legacy-дані: інферимо через premium_events
+            ev = db.cursor.execute(
+                "SELECT event_type FROM premium_events "
+                "WHERE user_id = ? AND event_type IN ('grant_paid','grant_channel') "
+                "ORDER BY event_at DESC LIMIT 1",
+                (uid,),
+            ).fetchone()
+            if not ev:
+                label = "sub"
+            elif ev["event_type"] == "grant_paid":
+                label = "гів"
+            else:
+                label = "sub"
+
+        ref = _fmt_user_ref(u)
+        expires = (u["premium_until"] or "").strip() if u["premium_until"] else ""
+        lines.append(f"{ref} — {label} до {expires}")
+
+        # У різних режимах хочемо, щоб кнопка знімала неоднозначність:
+        # - remove: кнопка = нік/ID, по кліку забираємо Premium
+        # - grant_paid: кнопка = нік/ID, по кліку просимо скільки днів
+        if mode == "remove":
+            kb_rows.append([
+                InlineKeyboardButton(
+                    ref,
+                    callback_data=f"admin_premium_remove_uid_{uid}_page_{page}",
+                )
+            ])
+        elif mode == "grant_paid":
+            kb_rows.append([
+                InlineKeyboardButton(
+                    ref,
+                    callback_data=f"admin_premium_grant_paid_uid_{uid}_page_{page}",
+                )
+            ])
+        elif mode == "grant_channel":
+            kb_rows.append([
+                InlineKeyboardButton(
+                    ref,
+                    callback_data=f"admin_premium_grant_channel_uid_{uid}_page_{page}",
+                )
+            ])
+        else:
+            # view: залишаємо "керування" кнопками
+            kb_rows.append([
+                InlineKeyboardButton("🗑 Забрати", callback_data=f"admin_premium_remove_uid_{uid}_page_{page}"),
+                InlineKeyboardButton("💳 Видати гів", callback_data=f"admin_premium_grant_paid_uid_{uid}_page_{page}"),
+                InlineKeyboardButton("🔗 Видати sub", callback_data=f"admin_premium_grant_channel_uid_{uid}_page_{page}"),
+            ])
+
+    if not lines:
+        await query.edit_message_text(
+            "Немає активних Premium користувачів.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ В адмін-меню", callback_data="admin_back")]]),
+        )
+        return
+
+    # Навігація по сторінках + вихід
+    nav: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀️ Prev", callback_data=f"admin_premium_active_list_page_{page-1}"))
+    if offset + page_size < total:
+        nav.append(InlineKeyboardButton("Next ▶️", callback_data=f"admin_premium_active_list_page_{page+1}"))
+    if nav:
+        kb_rows.append(nav)
+
+    kb_rows.append([InlineKeyboardButton("◀️ В Premium-меню", callback_data="admin_premium")])
+    kb_rows.append([InlineKeyboardButton("◀️ В адмін-меню", callback_data="admin_back")])
+
+    text = "👥 **Активні Premium**\n\n" + "\n".join(lines) + f"\n\nСторінка: {page+1}"
+    try:
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb_rows))
+    except BadRequest as e:
+        # Натискання "◀️ В Premium-меню" з цієї ж сторінки може дати ідентичний контент.
+        if "Message is not modified" not in str(e):
+            raise
+
+
+async def admin_premium_channels_manage(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.from_user.id not in ADMIN_IDS:
         return
 
     channels = db.cursor.execute(
         "SELECT id, link, title FROM premium_channels ORDER BY id ASC"
     ).fetchall()
 
-    text_lines = ["💎 **Управління Premium**\n"]
-
     if not channels:
-        text_lines.append("Поки що немає доданих Premium-каналів.\n")
+        text = "🔗 **Канали Premium**\n\nПоки що немає доданих каналів."
     else:
-        text_lines.append("Діючі канали:\n")
+        lines = ["🔗 **Канали Premium**\n"]
         for ch in channels:
             title = (ch["title"] or "").strip()
             if title:
-                text_lines.append(f"- {ch['id']}: {title} ({ch['link']})")
+                lines.append(f"- {ch['id']}: {title} ({ch['link']})")
             else:
-                text_lines.append(f"- {ch['id']}: {ch['link']}")
-
-    text_lines.append("\nНатисніть кнопку нижче, щоб додати новий канал.")
-    text = "\n".join(text_lines)
+                lines.append(f"- {ch['id']}: {ch['link']}")
+        text = "\n".join(lines)
 
     keyboard = [
-        [InlineKeyboardButton("➕ Додати посилання", callback_data="admin_premium_add_link")]
+        [InlineKeyboardButton("➕ Додати посилання", callback_data="admin_premium_add_link")],
+        [InlineKeyboardButton("◀️ В Premium-меню", callback_data="admin_premium")],
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 async def admin_premium_add_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1744,6 +2270,9 @@ async def handle_all_text_inputs(update: Update, context: ContextTypes.DEFAULT_T
             'in_delete_menu', 'in_additional_menu', 
             'delete_awaiting_recent', 'delete_awaiting_first', 
             'delete_awaiting_range', 'delete_awaiting_date',
+            'delete_action', 'awaiting_delete_input',
+            'awaiting_recent_count', 'awaiting_first_count',
+            'awaiting_range', 'awaiting_date',
             'shared_in_delete_menu', 'shared_del_awaiting_recent',
             'shared_del_awaiting_first', 'shared_del_awaiting_range',
             'shared_del_awaiting_date'
