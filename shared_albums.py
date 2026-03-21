@@ -158,9 +158,6 @@ async def shared_handle_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
         parse_mode='Markdown'
     )
     
-    # Лог для перевірки
-    print(f"✅ Спільний альбом створено, active={context.user_data.get('shared_album_active')}")
-
     # ВАЖЛИВО: Очищаємо стан звичайного альбому, якщо він був активний
     context.user_data['album_keyboard_active'] = False
     context.user_data.pop('current_album', None)
@@ -409,19 +406,15 @@ async def shared_handle_del_inputs(update: Update, context: ContextTypes.DEFAULT
     text = update.message.text
     album_id = ud.get('shared_delete_album_id')
     
-    print(f"🔍 [shared_handle_del_inputs] text={text}, album_id={album_id}")
-    
     if not album_id: 
         return False
         
     all_files = db.get_album_files(album_id)
-    print(f"🔍 Всього файлів в альбомі: {len(all_files)}")
 
     try:
         # 1. Останні
         if ud.get('shared_del_awaiting_recent'):
             count = int(text)
-            print(f"🔍 Вибрано останні {count} файлів")
             selected = list(enumerate(all_files, 1))[-count:]
             await update.message.reply_text(f"📤 Надсилаю останні {len(selected)} файлів...")
             for idx, f in selected: 
@@ -432,7 +425,6 @@ async def shared_handle_del_inputs(update: Update, context: ContextTypes.DEFAULT
         # 2. Перші
         if ud.get('shared_del_awaiting_first'):
             count = int(text)
-            print(f"🔍 Вибрано перші {count} файлів")
             selected = list(enumerate(all_files, 1))[:count]
             await update.message.reply_text(f"📤 Надсилаю перші {len(selected)} файлів...")
             for idx, f in selected: 
@@ -443,7 +435,6 @@ async def shared_handle_del_inputs(update: Update, context: ContextTypes.DEFAULT
         # 3. Проміжок
         if ud.get('shared_del_awaiting_range'):
             start, end = map(int, text.split('-'))
-            print(f"🔍 Вибрано проміжок {start}-{end}")
             selected = all_files[start-1:end]
             await update.message.reply_text(f"📤 Надсилаю файли з {start} по {end}...")
             for i, f in enumerate(selected): 
@@ -1057,9 +1048,6 @@ async def shared_handle_all_buttons(update: Update, context: ContextTypes.DEFAUL
     
     album_id = ud.get('current_shared_album')
     
-    print(f"🔵 [shared_handle_all_buttons] Обробка: '{text}'")
-    print(f"🔵 Стан: in_delete_menu={ud.get('shared_in_delete_menu')}")
-    
     # --- 1. СПЕЦІАЛЬНІ РЕЖИМИ (ВВІД ЧИСЕЛ/ДАТ) ---
     if ud.get('shared_awaiting_recent_count') or ud.get('shared_awaiting_first_count') or \
        ud.get('shared_awaiting_range') or ud.get('shared_awaiting_date'):
@@ -1306,15 +1294,13 @@ async def shared_handle_del_inputs(update: Update, context: ContextTypes.DEFAULT
 
 async def send_shared_file_for_deletion(update: Update, context: ContextTypes.DEFAULT_TYPE, file_data, index=None):
     """Надсилає файл з кнопкою для видалення"""
-    print(f"🔍 [send_shared_file_for_deletion] Початок для файлу #{index}")
-    
+
     # Переконуємося, що file_data - це словник
     try:
         if not isinstance(file_data, dict):
             f = dict(file_data)
         else:
             f = file_data
-        print(f"🔍 Дані файлу: {f}")
     except Exception as e:
         print(f"❌ Помилка перетворення file_data: {e}")
         return
@@ -1324,8 +1310,6 @@ async def send_shared_file_for_deletion(update: Update, context: ContextTypes.DE
     file_id = f.get('telegram_file_id')
     file_type = f.get('file_type')
     album_id = f.get('album_id')
-    
-    print(f"🔍 file_id_db={file_id_db}, file_id={file_id}, file_type={file_type}, album_id={album_id}")
     
     if not file_id:
         print(f"❌ Немає telegram_file_id для файлу #{index}")
@@ -1348,16 +1332,12 @@ async def send_shared_file_for_deletion(update: Update, context: ContextTypes.DE
     try:
         if file_type == 'photo':
             await update.message.reply_photo(photo=file_id, reply_markup=keyboard)
-            print(f"✅ Фото #{index} надіслано")
         elif file_type == 'video':
             await update.message.reply_video(video=file_id, reply_markup=keyboard)
-            print(f"✅ Відео #{index} надіслано")
         elif file_type == 'document':
             await update.message.reply_document(document=file_id, reply_markup=keyboard)
-            print(f"✅ Документ #{index} надіслано")
         elif file_type == 'circle':
             await update.message.reply_video_note(video_note=file_id, reply_markup=keyboard)
-            print(f"✅ Кружечок #{index} надіслано")
         else:
             print(f"❌ Невідомий тип файлу: {file_type}")
             await update.message.reply_text(f"❌ Файл #{index} має невідомий тип: {file_type}")
@@ -1905,13 +1885,10 @@ async def send_file_by_type_shared(update: Update, context: ContextTypes.DEFAULT
 
 async def shared_handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обробник основних кнопок спільного альбому"""
-    
-    print(f"🔵 shared_handle_main_buttons: text='{update.message.text}'")
-    
+
     # ПЕРЕВІРКА: Якщо число - пропускаємо для інших обробників
     try:
         int(update.message.text)
-        print("🔵 Це число, пропускаємо для shared_handle_recent_count")
         return False
     except ValueError:
         pass
@@ -1921,12 +1898,10 @@ async def shared_handle_main_buttons(update: Update, context: ContextTypes.DEFAU
         context.user_data.get("shared_awaiting_first_count") or
         context.user_data.get("shared_awaiting_range") or
         context.user_data.get("shared_awaiting_date")):
-        print("🔵 Є активне очікування, пропускаємо")
         return False
     
     # Якщо не відкритий спільний альбом — пропускаємо
     if not context.user_data.get("shared_album_active"):
-        print("🔵 Не активний спільний альбом")
         return False
     
     text = update.message.text
@@ -1934,7 +1909,6 @@ async def shared_handle_main_buttons(update: Update, context: ContextTypes.DEFAU
     
     # ВАЖЛИВО: Спочатку перевіряємо кнопки видалення, щоб вони не блокувалися
     if text.startswith("Видалити:"):
-        print(f"🔵 Це кнопка видалення: {text}, повертаємо False, щоб піти далі в інші обробники")
         return False  # Повертаємо False, щоб текст пішов далі в інші обробники
     
     if "Надіслати весь альбом" in text:

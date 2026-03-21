@@ -41,7 +41,6 @@ class Database:
         self.cursor.execute("PRAGMA table_info(users)")
         columns = [column[1] for column in self.cursor.fetchall()]
         if 'display_settings' not in columns:
-            print("⚠️ Додаю відсутню колонку display_settings...")
             self.cursor.execute('ALTER TABLE users ADD COLUMN display_settings TEXT DEFAULT \'{"show_number": true, "show_date": true}\'')
 
         # 2. Таблиця альбомів
@@ -169,7 +168,6 @@ class Database:
         self.cursor.execute('CREATE TABLE IF NOT EXISTS archive_log (id INTEGER PRIMARY KEY AUTOINCREMENT, album_id INTEGER, user_id INTEGER, action TEXT CHECK(action IN ("archive", "unarchive")), action_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (album_id) REFERENCES albums (album_id), FOREIGN KEY (user_id) REFERENCES users (user_id))')
         
         self.conn.commit()
-        print("✅ Структура бази даних перевірена та оновлена")
 
     def log_bot_chat_event(self, chat_id: int, chat_type: str, event_type: str):
         """Логує подію додавання/видалення бота та оновлює поточний стан чату."""

@@ -22,10 +22,7 @@ def setup_indexes():
             pass
     
     db.conn.commit()
-    print("✅ Індекси створені")
     db.close()
 
 if __name__ == "__main__":
-    print("🚀 Налаштування бази даних...")
     setup_indexes()
-    print("✅ База даних готова до роботи!")

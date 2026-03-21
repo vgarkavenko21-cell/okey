@@ -117,29 +117,21 @@ async def handle_delete_text(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if text.startswith("◀️") or text == "❌ Скасувати" or text == "🗑 Видалити альбом":
         return False
     if text.startswith("◀️") or text == "❌ Скасувати":
-        print(f"🔄 Навігація: пропускаємо '{text}' до головного обробника")
         return False
 
     # Якщо активний спільний альбом - пропускаємо
     if ud.get('shared_album_active'):
         return False
     
-    print(f"🔍 handle_delete_text: text='{text}'")
-    print(f"📊 in_delete_menu={ud.get('in_delete_menu')}, delete_action={ud.get('delete_action')}")
-    
     # Якщо не в режимі видалення - пропускаємо
     if not ud.get('in_delete_menu'):
-        print("❌ Не в режимі видалення")
         return False
     
     # Отримуємо поточну дію (recent, first, range, date)
     action = ud.get('delete_action')
     
     if not action:
-        print("❌ Немає активної дії")
         return False
-    
-    print(f"✅ Обробляємо дію: {action} з текстом: {text}")
     
     # Викликаємо відповідний обробник залежно від дії
     if action == 'recent':
@@ -156,9 +148,7 @@ async def handle_delete_text(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def delete_handle_recent_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обробник введення кількості останніх файлів для видалення"""
-    
-    print(f"🔢 delete_handle_recent_input: {update.message.text}")
-    
+
     try:
         count = int(update.message.text)
         if count <= 0 or count > 50:

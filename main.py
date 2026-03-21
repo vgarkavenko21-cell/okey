@@ -1,5 +1,8 @@
 import logging
 import asyncio
+import traceback
+import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -129,6 +132,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👋 Вітаю, {user.first_name}!\n\n"
         f"Я бот для збереження ваших медіа-файлів та нотаток.\n"
         f"📸 Фото, відео, документи, аудіо — все зберігається через file_id Telegram.\n\n"
+        f"🔧 Бот працює в тестовому режимі.\n"
+        f"Для надсилання помилок або співпраці пишіть: @harkavenko_v\n\n"
         f"Оберіть розділ у меню нижче:"
     )
     
@@ -1201,7 +1206,7 @@ async def show_display_settings(update: Update, context: ContextTypes.DEFAULT_TY
         )
     except BadRequest as e:
         if "Message is not modified" in str(e):
-            print("Інтерфейс вже актуальний, редагування не потрібне.")
+            pass
         else:
             raise e # Якщо помилка інша — прокидаємо її далі
         
@@ -2604,16 +2609,12 @@ async def shared_delete_dispatcher(update: Update, context: ContextTypes.DEFAULT
         or ud.get('shared_del_awaiting_range')
         or ud.get('shared_del_awaiting_date')
     ):
-        print("👉 В РЕЖИМІ ВИДАЛЕННЯ")
-
         res = await handle_shared_delete_choices(update, context)
         if res:
-            print("✅ handle_shared_delete_choices СПРАЦЮВАВ")
             return True
 
         res = await shared_handle_del_inputs(update, context)
         if res:
-            print("✅ shared_handle_del_inputs СПРАЦЮВАВ")
             return True
 
     return False
@@ -2656,8 +2657,6 @@ async def handle_all_text_inputs(update: Update, context: ContextTypes.DEFAULT_T
     
     # --- 1. ПРІОРИТЕТНА НАВІГАЦІЯ (ОБРОБКА ТОГО, ЩО ПРИЙШЛО З GROUP 1) ---
     if text == "◀️ Назад до альбому":
-        print(f"✅ Головний обробник: повертаємось до альбому з тексту '{text}'")
-        
         # Миттєво чистимо ВСІ режими, щоб бот "протверезів"
         states_to_reset = [
             'in_delete_menu', 'in_additional_menu', 
@@ -2817,6 +2816,65 @@ async def handle_all_files_dispatcher(update: Update, context: ContextTypes.DEFA
     await update.message.reply_text("⚠️ Для медіа відкрийте альбом. Для нотаток: надсилайте текст або фото з підписом у папці нотаток.")
     return True
 
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """Глобальний обробник помилок: лог + сповіщення адміну(ам) у Telegram."""
+    logger.exception("Unhandled exception while processing update", exc_info=context.error)
+
+    # Безпечний текст апдейта (може бути дуже довгим)
+    try:
+        update_repr = update.to_dict() if isinstance(update, Update) else str(update)
+    except Exception:
+        update_repr = "Не вдалося серіалізувати update."
+
+    tb = "".join(traceback.format_exception(None, context.error, context.error.__traceback__)) if context.error else "Невідома помилка"
+
+    base_text = (
+        "🚨 ПОМИЛКА В БОТІ\n\n"
+        f"Тип: {type(context.error).__name__ if context.error else 'Unknown'}\n"
+        f"Повідомлення: {str(context.error) if context.error else 'Невідомо'}\n\n"
+        f"Update:\n{str(update_repr)}\n\n"
+        f"Traceback:\n{tb}"
+    )
+
+    # Telegram має ліміт ~4096 символів
+    max_len = 3900
+    chunks = [base_text[i:i + max_len] for i in range(0, len(base_text), max_len)] or [base_text]
+
+    for admin_id in ADMIN_IDS:
+        for idx, chunk in enumerate(chunks, start=1):
+            prefix = f"[{idx}/{len(chunks)}]\n" if len(chunks) > 1 else ""
+            try:
+                await context.bot.send_message(chat_id=admin_id, text=prefix + chunk)
+            except Exception as notify_err:
+                logger.error("Failed to notify admin %s about error: %s", admin_id, notify_err)
+
+
+def _send_fatal_crash_alert_sync(exc: Exception):
+    """Синхронне аварійне повідомлення адмінам перед завершенням процесу."""
+    tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    text = (
+        "🚨 КРИТИЧНА ПОМИЛКА\n"
+        "Бот зараз аварійно завершує роботу.\n\n"
+        f"Тип: {type(exc).__name__}\n"
+        f"Повідомлення: {str(exc)}\n\n"
+        f"Traceback:\n{tb}"
+    )
+    chunks = [text[i:i + 3900] for i in range(0, len(text), 3900)] or [text]
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+
+    for admin_id in ADMIN_IDS:
+        for idx, chunk in enumerate(chunks, start=1):
+            prefix = f"[{idx}/{len(chunks)}]\n" if len(chunks) > 1 else ""
+            payload = urllib.parse.urlencode({"chat_id": admin_id, "text": prefix + chunk}).encode("utf-8")
+            req = urllib.request.Request(url, data=payload, method="POST")
+            try:
+                with urllib.request.urlopen(req, timeout=5):
+                    pass
+            except Exception:
+                # Тут вже нічого не робимо: процес і так завершується.
+                pass
+
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
 
@@ -2841,8 +2899,15 @@ def main():
     application.add_handler(ChatMemberHandler(handle_my_chat_member_update, ChatMemberHandler.MY_CHAT_MEMBER))
     application.add_handler(CallbackQueryHandler(handle_premium_callback, pattern="^premium_"))
     application.add_handler(CallbackQueryHandler(callback_handler))
+    application.add_error_handler(error_handler)
 
-    print("🚀 Маршрутизатори оновлені. Запускаємося!")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        # Штатна зупинка вручну: без аварійного алерту.
+        raise
+    except Exception as exc:
+        _send_fatal_crash_alert_sync(exc)
+        raise
