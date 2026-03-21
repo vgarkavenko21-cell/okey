@@ -22,6 +22,9 @@ FREE_LIMITS = {
     "shared_notes": 3
 }
 
+# Термін Premium після підписки на канали (кнопки + «Перевірити підписку»)
+PREMIUM_CHANNEL_SUBSCRIPTION_DAYS = 7
+
 # Налаштування за замовчуванням
 DEFAULT_PRIVACY = {
     "allow_invites": "all",  # all, contacts, nobody

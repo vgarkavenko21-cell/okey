@@ -12,6 +12,7 @@ from typing import Any
 
 from config import ADMIN_IDS
 from db_models import Database
+from premium import premium_channel_link_verifiable, premium_link_needs_bind
 
 db = Database()
 ADMIN_PASSWORD = "123"
@@ -491,6 +492,49 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await update.message.reply_text("✅ Канал видалено (якщо існував).")
         return True
 
+    # Оновлення посилання без видалення: link ID новийлінк
+    tl = (text or "").strip()
+    if tl.lower().startswith("link "):
+        rest = tl[5:].strip()
+        try:
+            cid_str, new_link = rest.split(maxsplit=1)
+            cid = int(cid_str)
+            new_link = (new_link or "").strip()
+        except ValueError:
+            await update.message.reply_text(
+                "❌ Формат: link ID нове_посилання\n"
+                "Приклад: link 2 @mychannel\n"
+                "або: link 2 https://t.me/c/1234567890/1"
+            )
+            return True
+        if not new_link:
+            await update.message.reply_text("❌ Вкажіть нове посилання після ID.")
+            return True
+        if not premium_channel_link_verifiable(new_link):
+            await update.message.reply_text(
+                "❌ Це посилання не підходить для перевірки підписки.\n\n"
+                "Invite t.me/+… не працює з API. Вкажіть:\n"
+                "• @username (публічний канал)\n"
+                "• t.me/username або t.me/s/username\n"
+                "• t.me/c/ЧИСЛО/… або id -100… (приватний канал)"
+            )
+            return True
+        cur = db.cursor.execute(
+            "UPDATE premium_channels SET link = ? WHERE id = ?",
+            (new_link, cid),
+        )
+        db.conn.commit()
+        if cur.rowcount == 0:
+            await update.message.reply_text(
+                f"❌ Запису з id={cid} немає. Відкрийте «🔗 Канали Premium» і подивіться список id."
+            )
+        else:
+            await update.message.reply_text(
+                f"✅ Посилання для каналу id={cid} оновлено.\n"
+                f"Перевірка Premium тепер зможе викликати getChatMember для цього каналу."
+            )
+        return True
+
     # ===== Premium канали (послідовне додавання: link -> title) =====
     if ud.get("admin_premium_awaiting_link"):
         cancel_words = {"❌ Скасувати", "◀️ Назад", "/cancel", "cancel"}
@@ -504,6 +548,14 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         link = (text or "").strip()
         if not link:
             await update.message.reply_text("Посилання порожнє. Надішліть ще раз.")
+            return True
+
+        if not premium_channel_link_verifiable(link):
+            await update.message.reply_text(
+                "❌ Посилання не розпізнано. Допустимо:\n"
+                "• запрошення https://t.me/+… або joinchat;\n"
+                "• @username, t.me/c/…, -100…",
+            )
             return True
 
         ud["admin_premium_pending_link"] = link
@@ -540,6 +592,7 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             "INSERT INTO premium_channels (link, title) VALUES (?, ?)",
             (link, title),
         )
+        new_row_id = int(db.cursor.execute("SELECT last_insert_rowid()").fetchone()[0])
         db.conn.commit()
 
         ud["admin_premium_awaiting_title"] = False
@@ -547,19 +600,26 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
         # Покажемо список знову (щоб адмін бачив діючі посилання)
         channels = db.cursor.execute(
-            "SELECT id, link, title FROM premium_channels ORDER BY id ASC"
+            "SELECT id, link, title, telegram_chat_id FROM premium_channels ORDER BY id ASC"
         ).fetchall()
 
         if not channels:
             await update.message.reply_text("✅ Додано, але зараз список порожній (очікувано не повинно бути).")
         else:
             lines = ["✅ Додано Premium-канал:", ""]
+            if premium_link_needs_bind(link):
+                lines.append(
+                    f"⚠️ У каналі (бот має бути адміном) надішліть: /bindpremium {new_row_id}"
+                )
+                lines.append("")
             for ch in channels:
                 t = (ch["title"] or "").strip()
+                tid = ch["telegram_chat_id"] if "telegram_chat_id" in ch.keys() else None
+                bind = f" ✓chat={tid}" if tid is not None else ""
                 if t:
-                    lines.append(f"- {ch['id']}: {t} ({ch['link']})")
+                    lines.append(f"- {ch['id']}: {t} ({ch['link']}){bind}")
                 else:
-                    lines.append(f"- {ch['id']}: {ch['link']}")
+                    lines.append(f"- {ch['id']}: {ch['link']}{bind}")
 
             # Інлайн-кнопка для повторного додавання
             keyboard = [[InlineKeyboardButton("➕ Додати посилання", callback_data="admin_premium_add_link")]]
@@ -573,26 +633,34 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     # ----- КАНАЛИ PREMIUM -----
     if text == "🔗 Канали Premium":
         channels = db.cursor.execute(
-            "SELECT id, link, title FROM premium_channels ORDER BY id ASC"
+            "SELECT id, link, title, telegram_chat_id FROM premium_channels ORDER BY id ASC"
         ).fetchall()
 
         if not channels:
             await update.message.reply_text("Поки що немає доданих Premium-каналів.")
         else:
-            lines = ["Діючі Premium-канали:\n"]
+            lines = ["Діючі Premium-канали:\n", "Для t.me/+ після додавання: у каналі /bindpremium ID\n"]
             for ch in channels:
                 t = (ch["title"] or "").strip()
+                tid = ch["telegram_chat_id"] if "telegram_chat_id" in ch.keys() else None
+                bind = f" ✓chat={tid}" if tid is not None else ""
                 if t:
-                    lines.append(f"- {ch['id']}: {t} ({ch['link']})")
+                    lines.append(f"- {ch['id']}: {t} ({ch['link']}){bind}")
                 else:
-                    lines.append(f"- {ch['id']}: {ch['link']}")
+                    lines.append(f"- {ch['id']}: {ch['link']}{bind}")
             await update.message.reply_text("\n".join(lines))
 
         keyboard = InlineKeyboardMarkup(
             [[InlineKeyboardButton("➕ Додати посилання", callback_data="admin_premium_add_link")]]
         )
         await update.message.reply_text("Натисніть кнопку, щоб додати новий канал:", reply_markup=keyboard)
-        await update.message.reply_text("Щоб видалити канал — напишіть: `del ID` (наприклад: del 3).", parse_mode="Markdown")
+        await update.message.reply_text(
+            "Команди:\n"
+            "• `del ID` — видалити канал\n"
+            "• `link ID нове_посилання` — змінити посилання\n"
+            "• у каналі: `/bindpremium ID` — прив'язати t.me/+ до чату",
+            parse_mode="Markdown",
+        )
         return True
 
     # ----- ВИХІД -----
