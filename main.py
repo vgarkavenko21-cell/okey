@@ -60,7 +60,6 @@ from notes_shared import (
     open_shared_note_folder,
     handle_shared_note_folder_name,
     handle_shared_note_buttons,
-    handle_shared_note_text_commands,
     handle_shared_note_media,
     handle_shared_note_delete_callback,
 )
@@ -1526,7 +1525,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if await handle_note_delete_callback(update, context):
             return
 
-    elif data.startswith("snote_"):
+    elif data.startswith("snote_") or data.startswith("snotes_member_"):
         if await handle_shared_note_delete_callback(update, context):
             return
 
@@ -1623,18 +1622,24 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         album_id = context.user_data.get('current_shared_album')
         access_level = context.user_data.get('shared_access_level')
         from shared_albums import shared_members_main
-        # Створюємо фейковий update для виклику
-        fake_update = update
-        fake_update.message = query.message
-        await shared_members_main(fake_update, context, album_id, access_level)
+        # Робимо lightweight update-like об'єкт, бо telegram.Update immutable
+        class _U:
+            pass
+        u = _U()
+        u.message = query.message
+        u.effective_user = query.from_user
+        await shared_members_main(u, context, album_id, access_level)
     
     elif data == "shared_back_to_role_selection":
         # Повернення до вибору ролі
         album_id = context.user_data.get('current_shared_album')
         from shared_albums import shared_manage_roles
-        fake_update = update
-        fake_update.message = query.message
-        await shared_manage_roles(fake_update, context, album_id)
+        class _U:
+            pass
+        u = _U()
+        u.message = query.message
+        u.effective_user = query.from_user
+        await shared_manage_roles(u, context, album_id)
     
     elif data.startswith("shared_role_"):
         # Вибір учасника для зміни ролі
@@ -2724,9 +2729,6 @@ async def handle_all_text_inputs(update: Update, context: ContextTypes.DEFAULT_T
 
     # --- 9. СПІЛЬНІ НОТАТКИ ---
     if ud.get('shared_note_active') or ud.get('current_shared_note_folder'):
-        res = await handle_shared_note_text_commands(update, context)
-        if res:
-            return True
         res = await handle_shared_note_buttons(update, context)
         if res:
             return True

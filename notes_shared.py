@@ -51,10 +51,105 @@ def shared_notes_delete_menu_keyboard() -> ReplyKeyboardMarkup:
 def shared_notes_members_keyboard(can_manage: bool) -> ReplyKeyboardMarkup:
     rows = [[KeyboardButton("📋 Всі учасники")]]
     if can_manage:
-        rows.append([KeyboardButton("➕ Додати учасника"), KeyboardButton("✏️ Змінити роль")])
+        rows.append([KeyboardButton("➕ Додати учасника")])
+        rows.append([KeyboardButton("✏️ Змінити роль")])
         rows.append([KeyboardButton("🗑 Видалити учасника")])
     rows.append([KeyboardButton("◀️ Назад до додаткових дій")])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+
+
+def shared_notes_change_role_menu_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton("📋 Надіслати всіх учасників для зміни ролі")],
+            [KeyboardButton("✏️ Змінити роль за юзернеймом")],
+            [KeyboardButton("◀️ Назад до учасників")],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def shared_notes_delete_member_menu_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton("📋 Надіслати всіх учасників для видалення")],
+            [KeyboardButton("🗑 Видалити за юзернеймом")],
+            [KeyboardButton("◀️ Назад до учасників")],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def shared_notes_roles_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton("⚙️ Адмін"), KeyboardButton("✏️ Редактор")],
+            [KeyboardButton("📤 Автор"), KeyboardButton("👁️ Спостерігач")],
+            [KeyboardButton("◀️ Назад до учасників")],
+        ],
+        resize_keyboard=True,
+    )
+
+def _member_name_row(member) -> str:
+    uname = f"@{member['username']}" if member["username"] else str(member["user_id"])
+    return f"{uname} • {helpers.get_role_name(member['access_level'])}"
+
+
+async def _send_members_for_role_change(update, members):
+    kb = []
+    for m in members:
+        if m["access_level"] == "owner":
+            continue
+        kb.append([InlineKeyboardButton(_member_name_row(m), callback_data=f"snotes_member_role_pick_{m['user_id']}")])
+    if kb:
+        await update.message.reply_text(
+            "Ви можете обрати учасника зі списку для зміни ролі або ввести його @username.",
+            reply_markup=InlineKeyboardMarkup(kb),
+        )
+    else:
+        await update.message.reply_text("Немає учасників для зміни ролі.")
+
+
+async def _send_members_for_delete(update, members):
+    kb = []
+    for m in members:
+        if m["access_level"] == "owner":
+            continue
+        kb.append([InlineKeyboardButton(f"🗑 {_member_name_row(m)}", callback_data=f"snotes_member_del_{m['user_id']}")])
+    if kb:
+        await update.message.reply_text(
+            "Для видалення учасника ви можете обрати його зі списку або ввести його @username через собачку.",
+            reply_markup=InlineKeyboardMarkup(kb),
+        )
+    else:
+        await update.message.reply_text("Немає учасників для видалення.")
+
+
+async def _prompt_role_select(update, uid: int):
+    user = db.cursor.execute("SELECT username, first_name FROM users WHERE user_id = ?", (uid,)).fetchone()
+    display = f"@{user['username']}" if user and user["username"] else (user["first_name"] if user and user["first_name"] else str(uid))
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⭐ Адмін (керування + редагування)", callback_data=f"snotes_member_role_set_{uid}_admin")],
+        [InlineKeyboardButton("🛠 Редактор (редагування + додавання)", callback_data=f"snotes_member_role_set_{uid}_editor")],
+        [InlineKeyboardButton("✍️ Автор (додавання + перегляд)", callback_data=f"snotes_member_role_set_{uid}_contributor")],
+        [InlineKeyboardButton("👁️ Спостерігач (тільки перегляд)", callback_data=f"snotes_member_role_set_{uid}_viewer")],
+    ])
+    await update.message.reply_text(
+        f"👤 {display}\nОберіть роль для заміни:",
+        reply_markup=kb,
+    )
+
+
+async def _prompt_delete_confirm(update, uid: int):
+    user = db.cursor.execute("SELECT username, first_name FROM users WHERE user_id = ?", (uid,)).fetchone()
+    display = f"@{user['username']}" if user and user["username"] else (user["first_name"] if user and user["first_name"] else str(uid))
+    await update.message.reply_text(
+        f"Видалити учасника {display}?",
+        reply_markup=ReplyKeyboardMarkup(
+            [[KeyboardButton("✅ Так"), KeyboardButton("❌ Ні")], [KeyboardButton("◀️ Назад до учасників")]],
+            resize_keyboard=True,
+        ),
+    )
 
 
 async def show_shared_notes(update, context: ContextTypes.DEFAULT_TYPE):
@@ -159,9 +254,10 @@ async def open_shared_note_folder(update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["shared_note_access"] = row["access_level"]
 
     await q.message.reply_text(
-        f"🤝 Папка: **{row['name']}**\nРоль: {helpers.get_role_name(row['access_level'])}\n"
-        f"Записів: {row['entries_count']}",
-        parse_mode="Markdown",
+        f"📁 {row['name']}\n"
+        f"Записів: {row['entries_count']}\n\n"
+        "Надсилайте свої записи в цей чат — вони автоматично збережуться в папку.\n"
+        "Також можна надсилати фото з підписом — збережеться фото і підпис у цьому записі.",
         reply_markup=shared_notes_keyboard(),
     )
 
@@ -251,7 +347,10 @@ async def handle_shared_note_buttons(update, context: ContextTypes.DEFAULT_TYPE)
         context.user_data["shared_note_active"] = False
         context.user_data.pop("current_shared_note_folder", None)
         context.user_data.pop("shared_note_access", None)
-        await update.message.reply_text("🤝 Вийшли зі спільної папки.", reply_markup=ReplyKeyboardMarkup([[KeyboardButton("📷 Мої альбоми"), KeyboardButton("👥 Спільні альбоми")],[KeyboardButton("📝 Мої нотатки"), KeyboardButton("🤝 Спільні нотатки")],[KeyboardButton("⚙️ Налаштування")]], resize_keyboard=True))
+        context.user_data.pop("shared_note_additional", None)
+        context.user_data.pop("shared_note_in_delete_menu", None)
+        context.user_data.pop("shared_note_in_members", None)
+        await show_shared_notes(update, context)
         return True
 
     if context.user_data.get("awaiting_shared_note_folder_name_confirm"):
@@ -432,6 +531,8 @@ async def handle_shared_note_buttons(update, context: ContextTypes.DEFAULT_TYPE)
             "shared_note_del_await_recent", "shared_note_del_await_first", "shared_note_del_await_range",
             "shared_note_del_await_date", "shared_note_member_add_wait_uid", "shared_note_member_add_wait_role",
             "shared_note_member_role_wait_uid", "shared_note_member_role_wait_role", "shared_note_member_del_wait_uid",
+            "shared_note_member_role_flow", "shared_note_member_delete_flow", "shared_note_member_role_by_username_wait",
+            "shared_note_member_delete_by_username_wait", "shared_note_member_delete_confirm_wait",
         ):
             context.user_data.pop(k, None)
         await update.message.reply_text("📁 Повернулись до папки.", reply_markup=shared_notes_keyboard())
@@ -486,6 +587,14 @@ async def handle_shared_note_buttons(update, context: ContextTypes.DEFAULT_TYPE)
     if context.user_data.get("shared_note_in_members"):
         members = _shared_members(folder_id)
         can_manage = access in {"owner", "admin"}
+        member_menu_buttons = {
+            "📋 Всі учасники",
+            "➕ Додати учасника",
+            "✏️ Змінити роль",
+            "🗑 Видалити учасника",
+            "◀️ Назад до учасників",
+            "◀️ Назад до додаткових дій",
+        }
         if text == "📋 Всі учасники":
             lines = ["👥 Учасники:"]
             for m in members:
@@ -497,85 +606,131 @@ async def handle_shared_note_buttons(update, context: ContextTypes.DEFAULT_TYPE)
             context.user_data["shared_note_in_members"] = False
             await update.message.reply_text("⚙️ Додаткові дії:", reply_markup=shared_notes_additional_keyboard())
             return True
+        if text == "◀️ Назад до учасників":
+            context.user_data.pop("shared_note_member_role_flow", None)
+            context.user_data.pop("shared_note_member_delete_flow", None)
+            context.user_data.pop("shared_note_member_role_by_username_wait", None)
+            context.user_data.pop("shared_note_member_delete_by_username_wait", None)
+            context.user_data.pop("shared_note_member_add_wait_uid", None)
+            context.user_data.pop("shared_note_member_add_wait_role", None)
+            context.user_data.pop("shared_note_member_pending_uid", None)
+            context.user_data.pop("shared_note_member_delete_pending_uid", None)
+            context.user_data.pop("shared_note_member_delete_confirm_wait", None)
+            await update.message.reply_text("👥 Меню учасників:", reply_markup=shared_notes_members_keyboard(can_manage))
+            return True
         if can_manage and text == "➕ Додати учасника":
+            context.user_data.pop("shared_note_member_role_flow", None)
+            context.user_data.pop("shared_note_member_delete_flow", None)
+            context.user_data.pop("shared_note_member_pending_uid", None)
+            context.user_data.pop("shared_note_member_delete_confirm_wait", None)
+            context.user_data.pop("shared_note_member_delete_confirm_uid", None)
             context.user_data["shared_note_member_add_wait_uid"] = True
-            await update.message.reply_text("Введіть USER_ID нового учасника:")
-            return True
-        if context.user_data.get("shared_note_member_add_wait_uid"):
-            context.user_data["shared_note_member_add_wait_uid"] = False
-            try:
-                uid = int(text.strip())
-            except Exception:
-                await update.message.reply_text("❌ USER_ID має бути числом.")
-                return True
-            context.user_data["shared_note_member_add_uid"] = uid
-            context.user_data["shared_note_member_add_wait_role"] = True
-            await update.message.reply_text("Введіть роль: viewer/contributor/editor/admin")
-            return True
-        if context.user_data.get("shared_note_member_add_wait_role"):
-            context.user_data["shared_note_member_add_wait_role"] = False
-            role = text.strip().lower()
-            uid = context.user_data.pop("shared_note_member_add_uid", None)
-            if role not in {"viewer", "contributor", "editor", "admin"} or uid is None:
-                await update.message.reply_text("❌ Невірна роль.")
-                return True
-            db.cursor.execute(
-                "INSERT OR REPLACE INTO shared_note_folders (folder_id, user_id, access_level, added_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
-                (folder_id, uid, role),
-            )
-            db.conn.commit()
-            await update.message.reply_text("✅ Учасника додано.")
+            await update.message.reply_text("Введіть @username нового учасника:")
             return True
         if can_manage and text == "✏️ Змінити роль":
-            context.user_data["shared_note_member_role_wait_uid"] = True
-            await update.message.reply_text("Введіть USER_ID учасника:")
-            return True
-        if context.user_data.get("shared_note_member_role_wait_uid"):
-            context.user_data["shared_note_member_role_wait_uid"] = False
-            try:
-                uid = int(text.strip())
-            except Exception:
-                await update.message.reply_text("❌ USER_ID має бути числом.")
-                return True
-            context.user_data["shared_note_member_role_uid"] = uid
-            context.user_data["shared_note_member_role_wait_role"] = True
-            await update.message.reply_text("Введіть нову роль: viewer/contributor/editor/admin")
-            return True
-        if context.user_data.get("shared_note_member_role_wait_role"):
-            context.user_data["shared_note_member_role_wait_role"] = False
-            uid = context.user_data.pop("shared_note_member_role_uid", None)
-            role = text.strip().lower()
-            if uid is None or role not in {"viewer", "contributor", "editor", "admin"}:
-                await update.message.reply_text("❌ Невірні дані.")
-                return True
-            db.cursor.execute(
-                "UPDATE shared_note_folders SET access_level = ? WHERE folder_id = ? AND user_id = ? AND access_level != 'owner'",
-                (role, folder_id, uid),
-            )
-            db.conn.commit()
-            await update.message.reply_text("✅ Роль оновлено.")
+            context.user_data.pop("shared_note_member_add_wait_uid", None)
+            context.user_data["shared_note_member_role_flow"] = True
+            context.user_data.pop("shared_note_member_delete_flow", None)
+            context.user_data.pop("shared_note_member_role_by_username_wait", None)
+            context.user_data.pop("shared_note_member_pending_uid", None)
+            context.user_data.pop("shared_note_member_delete_confirm_wait", None)
+            context.user_data.pop("shared_note_member_delete_confirm_uid", None)
+            await _send_members_for_role_change(update, members)
             return True
         if can_manage and text == "🗑 Видалити учасника":
-            context.user_data["shared_note_member_del_wait_uid"] = True
-            await update.message.reply_text("Введіть USER_ID учасника для видалення:")
+            context.user_data.pop("shared_note_member_add_wait_uid", None)
+            context.user_data["shared_note_member_delete_flow"] = True
+            context.user_data.pop("shared_note_member_role_flow", None)
+            context.user_data.pop("shared_note_member_pending_uid", None)
+            context.user_data.pop("shared_note_member_delete_by_username_wait", None)
+            context.user_data.pop("shared_note_member_delete_confirm_uid", None)
+            context.user_data.pop("shared_note_member_delete_confirm_wait", None)
+            await _send_members_for_delete(update, members)
             return True
-        if context.user_data.get("shared_note_member_del_wait_uid"):
-            context.user_data["shared_note_member_del_wait_uid"] = False
-            try:
-                uid = int(text.strip())
-            except Exception:
-                await update.message.reply_text("❌ USER_ID має бути числом.")
+        if context.user_data.get("shared_note_member_add_wait_uid"):
+            if text in member_menu_buttons:
+                context.user_data["shared_note_member_add_wait_uid"] = False
+            elif text.strip().startswith("@"):
+                context.user_data["shared_note_member_add_wait_uid"] = False
+                uid = await _resolve_user_token(text.strip())
+                if uid is None:
+                    await update.message.reply_text("❌ Користувача не знайдено. Введіть саме @username.")
+                    return True
+                db.cursor.execute(
+                    "INSERT OR REPLACE INTO shared_note_folders (folder_id, user_id, access_level, added_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+                    (folder_id, uid, "viewer"),
+                )
+                db.conn.commit()
+                await update.message.reply_text("✅ Учасника додано (Спостерігач).")
                 return True
-            db.cursor.execute(
-                "DELETE FROM shared_note_folders WHERE folder_id = ? AND user_id = ? AND access_level != 'owner'",
-                (folder_id, uid),
-            )
-            db.conn.commit()
-            await update.message.reply_text("✅ Учасника видалено.")
+            else:
+                await update.message.reply_text("❌ Введіть саме @username нового учасника.")
+                return True
+        if context.user_data.get("shared_note_member_delete_confirm_wait"):
+            if text == "✅ Так":
+                uid = context.user_data.pop("shared_note_member_delete_confirm_uid", None)
+                context.user_data["shared_note_member_delete_confirm_wait"] = False
+                context.user_data.pop("shared_note_member_pending_uid", None)
+                if uid is not None:
+                    db.cursor.execute(
+                        "DELETE FROM shared_note_folders WHERE folder_id = ? AND user_id = ? AND access_level != 'owner'",
+                        (folder_id, uid),
+                    )
+                    db.conn.commit()
+                    await update.message.reply_text("✅ Учасника видалено.")
+                await update.message.reply_text("👥 Меню учасників:", reply_markup=shared_notes_members_keyboard(can_manage))
+                return True
+            if text == "❌ Ні":
+                context.user_data["shared_note_member_delete_confirm_wait"] = False
+                context.user_data.pop("shared_note_member_delete_confirm_uid", None)
+                context.user_data.pop("shared_note_member_pending_uid", None)
+                context.user_data["shared_note_in_members"] = False
+                context.user_data["shared_note_member_delete_flow"] = False
+                await update.message.reply_text("Скасовано.", reply_markup=shared_notes_additional_keyboard())
+                return True
+        if context.user_data.get("shared_note_member_role_flow") and text.strip().startswith("@"):
+            uid = await _resolve_user_token(text.strip())
+            if uid is None:
+                await update.message.reply_text("❌ Користувача не знайдено. Введіть @username.")
+                return True
+            context.user_data["shared_note_member_pending_uid"] = uid
+            await _prompt_role_select(update, uid)
             return True
+        if context.user_data.get("shared_note_member_pending_uid"):
+            role_map = {
+                "⚙️ Адмін": "admin",
+                "✏️ Редактор": "editor",
+                "📤 Автор": "contributor",
+                "👁️ Спостерігач": "viewer",
+            }
+            role = role_map.get(text.strip())
+            if role:
+                uid = context.user_data.pop("shared_note_member_pending_uid", None)
+                if uid is not None:
+                    db.cursor.execute(
+                        "UPDATE shared_note_folders SET access_level = ? WHERE folder_id = ? AND user_id = ? AND access_level != 'owner'",
+                        (role, folder_id, uid),
+                    )
+                    db.conn.commit()
+                    await update.message.reply_text("✅ Роль оновлено.")
+                    await update.message.reply_text("👥 Меню учасників:", reply_markup=shared_notes_members_keyboard(can_manage))
+                    return True
+            await update.message.reply_text("Оберіть роль кнопкою нижче.", reply_markup=shared_notes_roles_keyboard())
+            return True
+        if context.user_data.get("shared_note_member_delete_flow") and text.strip().startswith("@"):
+            uid = await _resolve_user_token(text.strip())
+            if uid is None:
+                await update.message.reply_text("❌ Користувача не знайдено. Введіть @username.")
+                return True
+            context.user_data["shared_note_member_delete_confirm_uid"] = uid
+            context.user_data["shared_note_member_delete_confirm_wait"] = True
+            await _prompt_delete_confirm(update, uid)
+            return True
+        await update.message.reply_text("Оберіть дію з меню учасників.", reply_markup=shared_notes_members_keyboard(can_manage))
+        return True
 
-    # ручний текст у спільній папці
-    if _is_manual_note_text(text) and access in {"owner", "admin", "editor", "contributor"}:
+    # ручний текст у спільній папці (тільки в основному екрані папки, не в підменю)
+    if not context.user_data.get("shared_note_additional") and not context.user_data.get("shared_note_in_members") and _is_manual_note_text(text) and access in {"owner", "admin", "editor", "contributor"}:
         title = text.strip().split("\n", 1)[0][:60] or "Новий запис"
         db.cursor.execute(
             "INSERT INTO note_entries (folder_id, user_id, title, content, created_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
@@ -668,53 +823,59 @@ async def handle_shared_note_delete_callback(update, context: ContextTypes.DEFAU
         except Exception:
             pass
         return True
+    if data.startswith("snotes_member_role_pick_"):
+        uid = int(data.split("_")[-1])
+        context.user_data["shared_note_member_role_flow"] = True
+        context.user_data["shared_note_member_pending_uid"] = uid
+        await _prompt_role_select(q, uid)
+        return True
+    if data.startswith("snotes_member_role_set_"):
+        parts = data.split("_")
+        uid = int(parts[4])
+        role = parts[5]
+        folder_id = context.user_data.get("current_shared_note_folder")
+        if folder_id and role in {"viewer", "contributor", "editor", "admin"}:
+            db.cursor.execute(
+                "UPDATE shared_note_folders SET access_level = ? WHERE folder_id = ? AND user_id = ? AND access_level != 'owner'",
+                (role, folder_id, uid),
+            )
+            db.conn.commit()
+            await q.answer("Роль оновлено.")
+            can_manage = context.user_data.get("shared_note_access") in {"owner", "admin"}
+            await q.message.reply_text("✅ Роль учасника оновлено.", reply_markup=shared_notes_members_keyboard(can_manage))
+        return True
+    if data.startswith("snotes_member_del_"):
+        uid = int(data.split("_")[-1])
+        folder_id = context.user_data.get("current_shared_note_folder")
+        if folder_id:
+            context.user_data["shared_note_member_delete_confirm_uid"] = uid
+            context.user_data["shared_note_member_delete_confirm_wait"] = True
+            context.user_data["shared_note_member_delete_flow"] = True
+            await _prompt_delete_confirm(q, uid)
+            await q.answer()
+        return True
+    if data.startswith("snotes_member_del_confirm_"):
+        uid = int(data.split("_")[-1])
+        folder_id = context.user_data.get("current_shared_note_folder")
+        if folder_id:
+            db.cursor.execute(
+                "DELETE FROM shared_note_folders WHERE folder_id = ? AND user_id = ? AND access_level != 'owner'",
+                (folder_id, uid),
+            )
+            db.conn.commit()
+        await q.answer("Учасника видалено.")
+        return True
+    if data == "snotes_member_del_cancel":
+        await q.answer("Скасовано")
+        return True
     return False
 
 
-async def handle_shared_note_text_commands(update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    # команди керування учасниками текстом
-    if not context.user_data.get("shared_note_active"):
-        return False
-    text = (update.message.text or "").strip()
-    folder_id = context.user_data.get("current_shared_note_folder")
-    access = context.user_data.get("shared_note_access", "viewer")
-    if not folder_id or access not in {"owner", "admin"}:
-        return False
-
-    parts = text.split()
-    if len(parts) != 3 or parts[0].lower() not in {"addnote", "rolenote"}:
-        if len(parts) == 2 and parts[0].lower() == "delnote":
-            try:
-                uid = int(parts[1])
-            except Exception:
-                await update.message.reply_text("❌ delnote USER_ID")
-                return True
-            db.cursor.execute("DELETE FROM shared_note_folders WHERE folder_id = ? AND user_id = ? AND access_level != 'owner'", (folder_id, uid))
-            db.conn.commit()
-            await update.message.reply_text("✅ Учасника видалено.")
-            return True
-        return False
-
-    cmd, uid_raw, role = parts[0].lower(), parts[1], parts[2].lower()
-    if role not in {"viewer", "contributor", "editor", "admin"}:
-        await update.message.reply_text("❌ Роль: viewer/contributor/editor/admin")
-        return True
-    try:
-        uid = int(uid_raw)
-    except Exception:
-        await update.message.reply_text("❌ USER_ID має бути числом")
-        return True
-
-    if cmd == "addnote":
-        db.cursor.execute(
-            "INSERT OR REPLACE INTO shared_note_folders (folder_id, user_id, access_level, added_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
-            (folder_id, uid, role),
-        )
-    else:
-        db.cursor.execute(
-            "UPDATE shared_note_folders SET access_level = ? WHERE folder_id = ? AND user_id = ? AND access_level != 'owner'",
-            (role, folder_id, uid),
-        )
-    db.conn.commit()
-    await update.message.reply_text("✅ Оновлено.")
-    return True
+async def _resolve_user_token(token: str):
+    t = (token or "").strip()
+    if not t:
+        return None
+    if t.startswith("@"):
+        row = db.cursor.execute("SELECT user_id FROM users WHERE username = ?", (t[1:],)).fetchone()
+        return int(row["user_id"]) if row else None
+    return None

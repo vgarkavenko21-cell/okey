@@ -245,10 +245,10 @@ async def notes_open_folder(update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("note_additional", None)
 
     await q.message.reply_text(
-        f"📁 Папка: **{folder['name']}**\n\n"
-        "Надішліть текст — він автоматично збережеться як запис.\n"
-        "Можна також надіслати фото з підписом: збережеться підпис (і фото в цьому записі).",
-        parse_mode="Markdown",
+        f"📁 {folder['name']}\n"
+        f"Записів: {folder['entries_count']}\n\n"
+        "Надсилайте свої записи в цей чат — вони автоматично збережуться в папку.\n"
+        "Також можна надсилати фото з підписом — збережеться фото і підпис у цьому записі.",
         reply_markup=notes_folder_keyboard(),
     )
 
@@ -429,7 +429,12 @@ async def handle_note_folder_buttons(update, context: ContextTypes.DEFAULT_TYPE)
         context.user_data["note_folder_active"] = False
         context.user_data.pop("current_note_folder", None)
         context.user_data.pop("note_additional", None)
-        await update.message.reply_text("📝 Вийшли з папки.", reply_markup=ReplyKeyboardMarkup([[KeyboardButton("📷 Мої альбоми"), KeyboardButton("👥 Спільні альбоми")],[KeyboardButton("📝 Мої нотатки"), KeyboardButton("🤝 Спільні нотатки")],[KeyboardButton("⚙️ Налаштування")]], resize_keyboard=True))
+        context.user_data.pop("note_in_delete_menu", None)
+        context.user_data.pop("note_del_await_recent", None)
+        context.user_data.pop("note_del_await_first", None)
+        context.user_data.pop("note_del_await_range", None)
+        context.user_data.pop("note_del_await_date", None)
+        await show_my_notes(update, context)
         return True
 
     if context.user_data.get("awaiting_note_folder_name_confirm"):
