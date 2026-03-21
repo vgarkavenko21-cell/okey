@@ -48,6 +48,22 @@ def check_user_limit(db, user_id, limit_type):
         owned_shared = db.count_owned_shared_albums(user_id)
         return owned_shared < shared_limit
 
+    if limit_type == 'notes':
+        notes_limit = FREE_LIMITS.get("notes", 3)
+        rows = db.cursor.execute(
+            "SELECT COUNT(*) FROM note_folders WHERE user_id = ? AND is_archived = 0",
+            (user_id,),
+        ).fetchone()
+        return int(rows[0]) < notes_limit
+
+    if limit_type == 'shared_notes':
+        shared_notes_limit = FREE_LIMITS.get("shared_notes", 3)
+        rows = db.cursor.execute(
+            "SELECT COUNT(*) FROM note_folders WHERE user_id = ? AND is_shared = 1 AND is_archived = 0",
+            (user_id,),
+        ).fetchone()
+        return int(rows[0]) < shared_notes_limit
+
     # Для інших ресурсів поки що лімітів немає
     return True
 

@@ -97,6 +97,12 @@ class Database:
                 title TEXT
             )
         ''')
+        self.cursor.execute("PRAGMA table_info(premium_channels)")
+        _pc_cols = [column[1] for column in self.cursor.fetchall()]
+        if "telegram_chat_id" not in _pc_cols:
+            self.cursor.execute(
+                "ALTER TABLE premium_channels ADD COLUMN telegram_chat_id INTEGER"
+            )
         
         # 6. Решта таблиць (нотатки, преміум, логи)
         self.cursor.execute('CREATE TABLE IF NOT EXISTS notes (note_id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, title TEXT, content TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, is_shared BOOLEAN DEFAULT 0, FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE)')
@@ -636,15 +642,10 @@ class Database:
             try:
                 expires = datetime.strptime(user['premium_until'], '%Y-%m-%d %H:%M:%S')
                 if expires < datetime.now():
-                    # Термін вийшов
                     self.remove_premium(user_id)
                     return False
-            except:
-                pass
-        
+            except Exception:
+                # якщо дата пошкоджена, вважаємо преміум неактивним
+                return False
+
         return True
-    
-    def close(self):
-        """Закриття з'єднання з БД"""
-        if self.conn:
-            self.conn.close()

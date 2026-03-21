@@ -43,6 +43,27 @@ from album_manage import (
 )
 from premium import show_premium_menu, handle_premium_callback
 from admin import admin_start, handle_admin_text, handle_admin_broadcast_message
+from notes import (
+    show_my_notes as notes_show_my_notes,
+    notes_create_start,
+    notes_open_folder,
+    notes_show_archived,
+    notes_unarchive,
+    notes_back_to_list,
+    handle_note_folder_name,
+    handle_note_folder_buttons,
+    handle_note_media,
+)
+from notes_shared import (
+    show_shared_notes as shared_notes_show,
+    shared_notes_create_start,
+    open_shared_note_folder,
+    handle_shared_note_folder_name,
+    handle_shared_note_buttons,
+    handle_shared_note_text_commands,
+    handle_shared_note_media,
+    handle_shared_note_delete_callback,
+)
 # Імпорти функцій спільного альбому для головного файлу (main.py)
 # Імпорти для роботи зі спільними альбомами в main.py
 # На початку main.py, де інші імпорти
@@ -239,13 +260,17 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text in main_menu_buttons:
         ud['shared_album_active'] = False
         ud['album_keyboard_active'] = False
+        ud['note_folder_active'] = False
+        ud['shared_note_active'] = False
         ud.pop('current_shared_album', None)
         ud.pop('current_album', None)
+        ud.pop('current_note_folder', None)
+        ud.pop('current_shared_note_folder', None)
         ud.pop('shared_in_additional', None)
         ud.pop('shared_in_members_main', None)
     else:
         # Тільки якщо це НЕ кнопка меню і активний альбом — ігноруємо (щоб не плутати з підписом до фото)
-        if ud.get('shared_album_active') or ud.get('album_keyboard_active'):
+        if ud.get('shared_album_active') or ud.get('album_keyboard_active') or ud.get('note_folder_active') or ud.get('shared_note_active'):
             return
 
     # --- Далі твоя звичайна логіка перевірки блокування та навігації ---
@@ -1027,21 +1052,11 @@ async def show_shared_albums(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def show_my_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показати особисті нотатки"""
-    # Тимчасово заглушка
-    await update.message.reply_text(
-        "📝 Розділ нотаток в розробці.\n\n"
-        "Незабаром ви зможете створювати текстові нотатки!",
-        reply_markup=MAIN_MENU
-    )
+    await notes_show_my_notes(update, context)
 
 async def show_shared_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показати спільні нотатки"""
-    # Тимчасово заглушка
-    await update.message.reply_text(
-        "🤝 Спільні нотатки в розробці.\n\n"
-        "Незабаром ви зможете ділитися нотатками!",
-        reply_markup=MAIN_MENU
-    )
+    await shared_notes_show(update, context)
 
 # ========== НАЛАШТУВАННЯ ==========
 
@@ -1163,8 +1178,8 @@ async def show_display_settings(update: Update, context: ContextTypes.DEFAULT_TY
     
     settings = helpers.get_user_display_settings(db, user_id)
     
-    num_btn = "✅ Відображати номер файлу" if settings.get('show_number', True) else "❌ Відображати номер"
-    date_btn = "✅ Відображати дату додавання" if settings.get('show_date', True) else "❌ Відображати дату"
+    num_btn = "✅ Відображати номер запису/файлу" if settings.get('show_number', True) else "❌ Відображати номер"
+    date_btn = "✅ Відображати дату запису/додавання" if settings.get('show_date', True) else "❌ Відображати дату"
     
     keyboard = [
         [InlineKeyboardButton(num_btn, callback_data="toggle_show_number")],
@@ -1176,7 +1191,7 @@ async def show_display_settings(update: Update, context: ContextTypes.DEFAULT_TY
     try:
         await query.edit_message_text(
             "👁 **Налаштування відображення**\n\n"
-            "Оберіть, яку інформацію додавати до файлів під час їх перегляду:\n"
+            "Оберіть, яку інформацію додавати до записів/файлів під час перегляду:\n"
             "*(✅ - увімкнено, ❌ - приховано)*",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown'
@@ -1484,6 +1499,36 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif data.startswith("open_album_"):
         await open_album(update, context)
+
+    elif data == "notes_create":
+        await notes_create_start(update, context)
+
+    elif data.startswith("notes_open_"):
+        await notes_open_folder(update, context)
+
+    elif data == "notes_archived":
+        await notes_show_archived(update, context)
+
+    elif data.startswith("notes_unarchive_"):
+        await notes_unarchive(update, context)
+
+    elif data == "notes_back":
+        await notes_back_to_list(update, context)
+
+    elif data.startswith("snotes_open_"):
+        await open_shared_note_folder(update, context)
+
+    elif data == "snotes_create":
+        await shared_notes_create_start(update, context)
+
+    elif data.startswith("note_"):
+        from notes import handle_note_delete_callback
+        if await handle_note_delete_callback(update, context):
+            return
+
+    elif data.startswith("snote_"):
+        if await handle_shared_note_delete_callback(update, context):
+            return
 
     # Додати всередині callback_handler
     elif data == "display_settings":
@@ -2614,6 +2659,8 @@ async def handle_all_text_inputs(update: Update, context: ContextTypes.DEFAULT_T
             return True
 
     # --- 4. ОСОБИСТІ АЛЬБОМИ (СТАНИ) ---
+    if ud.get('awaiting_shared_note_folder_name'): return await handle_shared_note_folder_name(update, context)
+    if ud.get('awaiting_note_folder_name'): return await handle_note_folder_name(update, context)
     if ud.get('awaiting_album_name'): return await handle_album_name(update, context)
     if ud.get('awaiting_recent_count'): return await handle_recent_count(update, context)
     if ud.get('awaiting_first_count'): return await handle_first_count(update, context)
@@ -2669,6 +2716,21 @@ async def handle_all_text_inputs(update: Update, context: ContextTypes.DEFAULT_T
         res = await handle_album_buttons(update, context)
         if res: return True
 
+    # --- 8. МОЇ НОТАТКИ ---
+    if ud.get('note_folder_active') or ud.get('current_note_folder'):
+        res = await handle_note_folder_buttons(update, context)
+        if res:
+            return True
+
+    # --- 9. СПІЛЬНІ НОТАТКИ ---
+    if ud.get('shared_note_active') or ud.get('current_shared_note_folder'):
+        res = await handle_shared_note_text_commands(update, context)
+        if res:
+            return True
+        res = await handle_shared_note_buttons(update, context)
+        if res:
+            return True
+
     return False
 
 async def handle_all_files_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2679,6 +2741,14 @@ async def handle_all_files_dispatcher(update: Update, context: ContextTypes.DEFA
     # обробляємо медіа тут до альбомної логіки.
     if await handle_admin_broadcast_message(update, context):
         return True
+
+    # Нотатки: фото з підписом зберігаємо як запис
+    if context.user_data.get('shared_note_active'):
+        if await handle_shared_note_media(update, context):
+            return True
+    if context.user_data.get('note_folder_active'):
+        if await handle_note_media(update, context):
+            return True
     
     # 1. Пріоритет спільним альбомам (якщо юзер зайшов у спільний)
     if ud.get('shared_album_active'):
@@ -2690,7 +2760,7 @@ async def handle_all_files_dispatcher(update: Update, context: ContextTypes.DEFA
         return await handle_file(update, context)
     
     # 3. Фолбек
-    await update.message.reply_text("⚠️ Спочатку відкрийте альбом, щоб зберегти файл.")
+    await update.message.reply_text("⚠️ Для медіа відкрийте альбом. Для нотаток: надсилайте текст або фото з підписом у папці нотаток.")
     return True
 
 def main():
