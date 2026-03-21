@@ -114,6 +114,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         first_name=user.first_name,
         last_name=user.last_name
     )
+    # Фіксуємо активний private-чат для коректної адмін-статистики/списків.
+    # Це також "лікує" legacy-користувачів, у яких немає запису в bot_chats.
+    try:
+        db.log_bot_chat_event(user.id, "private", "added")
+    except Exception:
+        pass
     
     # Перевіряємо чи це адмін
     is_admin = user.id in ADMIN_IDS
@@ -1983,6 +1989,14 @@ async def admin_stats_show_period(update: Update, context: ContextTypes.DEFAULT_
     def _count(sql: str, params: tuple):
         return db.cursor.execute(sql, params).fetchone()[0]
 
+    active_users_filter = (
+        "user_id IN ("
+        "SELECT u.user_id FROM users u "
+        "LEFT JOIN bot_chats bc ON bc.chat_id = u.user_id AND bc.chat_type = 'private' "
+        "WHERE bc.chat_id IS NULL OR bc.is_active = 1"
+        ")"
+    )
+
     where_events = "1=1"
     params_events: tuple = ()
     if start_str:
@@ -2022,15 +2036,21 @@ async def admin_stats_show_period(update: Update, context: ContextTypes.DEFAULT_
         params_events,
     )
 
-    # Учасники = нові користувачі за період
+    # Учасники = нові активні користувачі за період
     if start_str:
         participants = db.cursor.execute(
-            "SELECT COUNT(*) FROM users WHERE registered_at >= ? AND registered_at <= ?",
+            "SELECT COUNT(*) FROM users u "
+            "LEFT JOIN bot_chats bc ON bc.chat_id = u.user_id AND bc.chat_type = 'private' "
+            "WHERE (bc.chat_id IS NULL OR bc.is_active = 1) "
+            "AND u.registered_at >= ? AND u.registered_at <= ?",
             (start_str, end_str),
         ).fetchone()[0]
     else:
         participants = db.cursor.execute(
-            "SELECT COUNT(*) FROM users WHERE registered_at <= ?",
+            "SELECT COUNT(*) FROM users u "
+            "LEFT JOIN bot_chats bc ON bc.chat_id = u.user_id AND bc.chat_type = 'private' "
+            "WHERE (bc.chat_id IS NULL OR bc.is_active = 1) "
+            "AND u.registered_at <= ?",
             (end_str,),
         ).fetchone()[0]
 
@@ -2046,29 +2066,37 @@ async def admin_stats_show_period(update: Update, context: ContextTypes.DEFAULT_
     ).fetchone()[0]
     # Поточний синхронізований стан Premium (не історія подій).
     active_paid_now = db.cursor.execute(
-        "SELECT COUNT(*) FROM premium_subscriptions "
-        "WHERE is_active = 1 AND subscription_type = 'paid' "
-        "AND expires_at IS NOT NULL AND expires_at >= CURRENT_TIMESTAMP"
+        f"SELECT COUNT(DISTINCT user_id) FROM premium_subscriptions "
+        f"WHERE is_active = 1 AND subscription_type = 'paid' "
+        f"AND expires_at IS NOT NULL AND expires_at >= CURRENT_TIMESTAMP "
+        f"AND {active_users_filter}"
     ).fetchone()[0]
     active_giv_now = db.cursor.execute(
-        "SELECT COUNT(*) FROM premium_subscriptions "
+        f"SELECT COUNT(DISTINCT user_id) FROM premium_subscriptions "
         "WHERE is_active = 1 AND subscription_type = 'paid' "
         "AND COALESCE(channel_id,'')='admin' "
-        "AND expires_at IS NOT NULL AND expires_at >= CURRENT_TIMESTAMP"
+        f"AND expires_at IS NOT NULL AND expires_at >= CURRENT_TIMESTAMP "
+        f"AND {active_users_filter}"
     ).fetchone()[0]
     active_buy_now = db.cursor.execute(
-        "SELECT COUNT(*) FROM premium_subscriptions "
+        f"SELECT COUNT(DISTINCT user_id) FROM premium_subscriptions "
         "WHERE is_active = 1 AND (subscription_type='manual' "
         "OR (subscription_type='paid' AND COALESCE(channel_id,'')!='admin')) "
-        "AND expires_at IS NOT NULL AND expires_at >= CURRENT_TIMESTAMP"
+        f"AND expires_at IS NOT NULL AND expires_at >= CURRENT_TIMESTAMP "
+        f"AND {active_users_filter}"
     ).fetchone()[0]
     active_sub_now = db.cursor.execute(
-        "SELECT COUNT(*) FROM premium_subscriptions "
+        f"SELECT COUNT(DISTINCT user_id) FROM premium_subscriptions "
         "WHERE is_active = 1 AND subscription_type = 'channel' "
-        "AND expires_at IS NOT NULL AND expires_at >= CURRENT_TIMESTAMP"
+        f"AND expires_at IS NOT NULL AND expires_at >= CURRENT_TIMESTAMP "
+        f"AND {active_users_filter}"
     ).fetchone()[0]
     active_premium_now = active_paid_now + active_sub_now
-    total_users_now = db.cursor.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    total_users_now = db.cursor.execute(
+        "SELECT COUNT(*) FROM users u "
+        "LEFT JOIN bot_chats bc ON bc.chat_id = u.user_id AND bc.chat_type = 'private' "
+        "WHERE bc.chat_id IS NULL OR bc.is_active = 1"
+    ).fetchone()[0]
     no_premium_now = max(total_users_now - active_premium_now, 0)
 
     text = (
@@ -2093,12 +2121,11 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    total_users = db.cursor.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-    total_subscribers = db.cursor.execute(
-        "SELECT COUNT(*) FROM bot_chats WHERE chat_type = 'private' AND is_active = 1"
+    total_users = db.cursor.execute(
+        "SELECT COUNT(*) FROM users u "
+        "LEFT JOIN bot_chats bc ON bc.chat_id = u.user_id AND bc.chat_type = 'private' "
+        "WHERE bc.chat_id IS NULL OR bc.is_active = 1"
     ).fetchone()[0]
-    if total_subscribers == 0:
-        total_subscribers = total_users
 
     active_groups_channels = db.cursor.execute(
         "SELECT COUNT(*) FROM bot_chats WHERE chat_type IN ('group','supergroup','channel') AND is_active = 1"
@@ -2109,26 +2136,34 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Рахуємо поточний Premium по активних підписках, а не по історії premium_events.
     active_paid = db.cursor.execute(
-        "SELECT COUNT(*) FROM premium_subscriptions "
-        "WHERE is_active = 1 AND subscription_type = 'paid' "
-        "AND expires_at IS NOT NULL AND expires_at >= CURRENT_TIMESTAMP"
+        "SELECT COUNT(DISTINCT ps.user_id) FROM premium_subscriptions ps "
+        "LEFT JOIN bot_chats bc ON bc.chat_id = ps.user_id AND bc.chat_type = 'private' "
+        "WHERE ps.is_active = 1 AND ps.subscription_type = 'paid' "
+        "AND ps.expires_at IS NOT NULL AND ps.expires_at >= CURRENT_TIMESTAMP "
+        "AND (bc.chat_id IS NULL OR bc.is_active = 1)"
     ).fetchone()[0]
     active_giv = db.cursor.execute(
-        "SELECT COUNT(*) FROM premium_subscriptions "
-        "WHERE is_active = 1 AND subscription_type='paid' "
-        "AND COALESCE(channel_id,'')='admin' "
-        "AND expires_at IS NOT NULL AND expires_at >= CURRENT_TIMESTAMP"
+        "SELECT COUNT(DISTINCT ps.user_id) FROM premium_subscriptions ps "
+        "LEFT JOIN bot_chats bc ON bc.chat_id = ps.user_id AND bc.chat_type = 'private' "
+        "WHERE ps.is_active = 1 AND ps.subscription_type='paid' "
+        "AND COALESCE(ps.channel_id,'')='admin' "
+        "AND ps.expires_at IS NOT NULL AND ps.expires_at >= CURRENT_TIMESTAMP "
+        "AND (bc.chat_id IS NULL OR bc.is_active = 1)"
     ).fetchone()[0]
     active_buy = db.cursor.execute(
-        "SELECT COUNT(*) FROM premium_subscriptions "
-        "WHERE is_active = 1 AND (subscription_type='manual' "
-        "OR (subscription_type='paid' AND COALESCE(channel_id,'')!='admin')) "
-        "AND expires_at IS NOT NULL AND expires_at >= CURRENT_TIMESTAMP"
+        "SELECT COUNT(DISTINCT ps.user_id) FROM premium_subscriptions ps "
+        "LEFT JOIN bot_chats bc ON bc.chat_id = ps.user_id AND bc.chat_type = 'private' "
+        "WHERE ps.is_active = 1 AND (ps.subscription_type='manual' "
+        "OR (ps.subscription_type='paid' AND COALESCE(ps.channel_id,'')!='admin')) "
+        "AND ps.expires_at IS NOT NULL AND ps.expires_at >= CURRENT_TIMESTAMP "
+        "AND (bc.chat_id IS NULL OR bc.is_active = 1)"
     ).fetchone()[0]
     active_sub = db.cursor.execute(
-        "SELECT COUNT(*) FROM premium_subscriptions "
-        "WHERE is_active = 1 AND subscription_type = 'channel' "
-        "AND expires_at IS NOT NULL AND expires_at >= CURRENT_TIMESTAMP"
+        "SELECT COUNT(DISTINCT ps.user_id) FROM premium_subscriptions ps "
+        "LEFT JOIN bot_chats bc ON bc.chat_id = ps.user_id AND bc.chat_type = 'private' "
+        "WHERE ps.is_active = 1 AND ps.subscription_type = 'channel' "
+        "AND ps.expires_at IS NOT NULL AND ps.expires_at >= CURRENT_TIMESTAMP "
+        "AND (bc.chat_id IS NULL OR bc.is_active = 1)"
     ).fetchone()[0]
     premium_total = active_paid + active_sub
     no_premium_total = max(total_users - premium_total, 0)
@@ -2209,9 +2244,14 @@ async def admin_users_send_all(update: Update, context: ContextTypes.DEFAULT_TYP
     if query.from_user.id not in ADMIN_IDS:
         return
 
-    # Беремо всіх користувачів
+    # Беремо тільки активних підписників бота (private chat is_active = 1),
+    # щоб у списку не було тих, хто заблокував/видалив бота.
     users = db.cursor.execute(
-        "SELECT user_id, username, first_name, is_premium, premium_until FROM users ORDER BY registered_at DESC"
+        "SELECT u.user_id, u.username, u.first_name, u.is_premium, u.premium_until "
+        "FROM users u "
+        "LEFT JOIN bot_chats bc ON bc.chat_id = u.user_id AND bc.chat_type = 'private' "
+        "WHERE bc.chat_id IS NULL OR bc.is_active = 1 "
+        "ORDER BY u.registered_at DESC"
     ).fetchall()
     total_users = len(users)
     total_groups_channels = db.cursor.execute(
@@ -2220,6 +2260,15 @@ async def admin_users_send_all(update: Update, context: ContextTypes.DEFAULT_TYP
 
     lines: list[str] = []
     chunk_size = 25
+
+    if total_users == 0:
+        await query.message.reply_text(
+            "👥 **Користувачі**\n\n"
+            "Загальна кількість користувачів: 0\n"
+            f"Кількість доданих груп/каналів: {total_groups_channels}\n\n"
+            "Список порожній."
+        )
+        return
 
     def user_status(urow):
         uid = urow["user_id"]
@@ -2257,7 +2306,8 @@ async def admin_users_send_all(update: Update, context: ContextTypes.DEFAULT_TYP
         st = user_status(u)
         name = (u["first_name"] or "").strip()
         user_ref = _fmt_user_ref(u)
-        premium_until = (u["premium_until"] or "").strip() if u["premium_until"] else ""
+        premium_until_raw = (u["premium_until"] or "").strip() if u["premium_until"] else ""
+        premium_until = premium_until_raw[:10] if premium_until_raw else ""
         if st == "free":
             line = f"{user_ref} {('- ' + name) if name else ''} — free"
         else:
@@ -2280,13 +2330,6 @@ async def admin_users_send_all(update: Update, context: ContextTypes.DEFAULT_TYP
             lines = []
 
     if lines:
-        if total_users == 0:
-            lines = [
-                "👥 **Користувачі**\n\n"
-                f"Загальна кількість користувачів: {total_users}\n"
-                f"Кількість доданих груп/каналів: {total_groups_channels}\n\n"
-                "Список порожній."
-            ]
         await query.message.reply_text("\n".join(lines))
         messages_sent += 1
 
@@ -2383,7 +2426,8 @@ async def admin_premium_active_list_page(
                 label = "sub"
 
         ref = _fmt_user_ref(u)
-        expires = (u["premium_until"] or "").strip() if u["premium_until"] else ""
+        expires_raw = (u["premium_until"] or "").strip() if u["premium_until"] else ""
+        expires = expires_raw[:10] if expires_raw else ""
         lines.append(f"{ref} — {label} до {expires}")
 
         # У різних режимах хочемо, щоб кнопка знімала неоднозначність:

@@ -250,7 +250,7 @@ async def notes_open_folder(update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
     )
     await q.message.reply_text(
-        "Надсилайте записи в цей чат, вони автоматично збережуться в папку.",
+        "Надсилайте записи в цей чат, вони автоматично збережуться в папку 👇",
         reply_markup=notes_folder_keyboard(),
     )
 
@@ -291,7 +291,7 @@ async def handle_note_folder_name(update, context: ContextTypes.DEFAULT_TYPE) ->
         parse_mode="Markdown",
     )
     await update.message.reply_text(
-        "Надсилайте записи в цей чат, вони автоматично збережуться в папку.",
+        "Надсилайте записи в цей чат, вони автоматично збережуться в папку 👇",
         reply_markup=notes_folder_keyboard(),
     )
     return True

@@ -1,4 +1,4 @@
-from datetime import datetime
+﻿from datetime import datetime
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ContextTypes
@@ -231,7 +231,7 @@ async def handle_shared_note_folder_name(update, context: ContextTypes.DEFAULT_T
         parse_mode="Markdown",
     )
     await update.message.reply_text(
-        "Надсилайте записи в цей чат, вони автоматично збережуться в папку.",
+        "Надсилайте записи в цей чат, вони автоматично збережуться в папку 👇",
         reply_markup=shared_notes_keyboard(),
     )
     return True
@@ -267,7 +267,7 @@ async def open_shared_note_folder(update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
     )
     await q.message.reply_text(
-        "Надсилайте записи в цей чат, вони автоматично збережуться в папку.",
+        "Надсилайте записи в цей чат, вони автоматично збережуться в папку 👇",
         reply_markup=shared_notes_keyboard(),
     )
 
