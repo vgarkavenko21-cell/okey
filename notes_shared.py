@@ -118,7 +118,7 @@ async def _send_members_for_delete(update, members):
         kb.append([InlineKeyboardButton(f"🗑 {_member_name_row(m)}", callback_data=f"snotes_member_del_{m['user_id']}")])
     if kb:
         await update.message.reply_text(
-            "Для видалення учасника ви можете обрати його зі списку або ввести його @username через собачку.",
+            "Для видалення учасника ви можете обрати його зі списку або ввести його @username.",
             reply_markup=InlineKeyboardMarkup(kb),
         )
     else:
@@ -129,9 +129,9 @@ async def _prompt_role_select(update, uid: int):
     user = db.cursor.execute("SELECT username, first_name FROM users WHERE user_id = ?", (uid,)).fetchone()
     display = f"@{user['username']}" if user and user["username"] else (user["first_name"] if user and user["first_name"] else str(uid))
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⭐ Адмін (керування + редагування)", callback_data=f"snotes_member_role_set_{uid}_admin")],
-        [InlineKeyboardButton("🛠 Редактор (редагування + додавання)", callback_data=f"snotes_member_role_set_{uid}_editor")],
-        [InlineKeyboardButton("✍️ Автор (додавання + перегляд)", callback_data=f"snotes_member_role_set_{uid}_contributor")],
+        [InlineKeyboardButton("⚙️ Адмін (керування + редагування)", callback_data=f"snotes_member_role_set_{uid}_admin")],
+        [InlineKeyboardButton("✏️ Редактор (редагування + додавання)", callback_data=f"snotes_member_role_set_{uid}_editor")],
+        [InlineKeyboardButton("📤 Автор (додавання + перегляд)", callback_data=f"snotes_member_role_set_{uid}_contributor")],
         [InlineKeyboardButton("👁️ Спостерігач (тільки перегляд)", callback_data=f"snotes_member_role_set_{uid}_viewer")],
     ])
     await update.message.reply_text(
@@ -224,7 +224,14 @@ async def handle_shared_note_folder_name(update, context: ContextTypes.DEFAULT_T
     context.user_data["shared_note_active"] = True
     context.user_data["shared_note_access"] = "owner"
     await update.message.reply_text(
-        f"✅ Створено спільну папку '{name}'.\nНадішліть текст — він автоматично збережеться як запис.",
+        f"✅ Спільну папку '{name}' успішно створено!\n\n"
+        f"🤝 **{name}**\n"
+        f"└ Записів: 0\n"
+        f"└ Ваша роль: {helpers.get_role_name('owner')}",
+        parse_mode="Markdown",
+    )
+    await update.message.reply_text(
+        "Надсилайте записи в цей чат, вони автоматично збережуться в папку.",
         reply_markup=shared_notes_keyboard(),
     )
     return True
@@ -254,10 +261,13 @@ async def open_shared_note_folder(update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["shared_note_access"] = row["access_level"]
 
     await q.message.reply_text(
-        f"📁 {row['name']}\n"
-        f"Записів: {row['entries_count']}\n\n"
-        "Надсилайте свої записи в цей чат — вони автоматично збережуться в папку.\n"
-        "Також можна надсилати фото з підписом — збережеться фото і підпис у цьому записі.",
+        f"🤝 **{row['name']}**\n"
+        f"└ Записів: {row['entries_count']}\n"
+        f"└ Ваша роль: {helpers.get_role_name(row['access_level'])}",
+        parse_mode="Markdown",
+    )
+    await q.message.reply_text(
+        "Надсилайте записи в цей чат, вони автоматично збережуться в папку.",
         reply_markup=shared_notes_keyboard(),
     )
 

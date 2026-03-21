@@ -8,6 +8,21 @@ db = Database()
 
 # ========== ГОЛОВНЕ МЕНЮ СПІЛЬНИХ АЛЬБОМІВ ==========
 
+
+def _shared_additional_buttons(access_level: str):
+    rows = [[KeyboardButton("👥 Учасники"), KeyboardButton("ℹ️ Інформація")]]
+    if access_level in ['owner', 'admin', 'editor', 'contributor']:
+        if access_level in ['owner', 'admin']:
+            rows.append([KeyboardButton("🗑 Видалити файл"), KeyboardButton("🗂 Архівувати альбом")])
+        else:
+            rows.append([KeyboardButton("🗑 Видалити файл")])
+    elif access_level in ['owner', 'admin']:
+        rows.append([KeyboardButton("🗂 Архівувати альбом")])
+    if access_level == 'owner':
+        rows.append([KeyboardButton("🗑 Видалити альбом"), KeyboardButton("📷 Перенести до моїх альбомів")])
+    rows.append([KeyboardButton("◀️ Назад до альбому")])
+    return rows
+
 async def shared_albums_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Головне меню спільних альбомів — ТІЛЬКИ СПІЛЬНІ"""
     user_id = update.effective_user.id
@@ -229,20 +244,7 @@ async def shared_additional_menu(update: Update, context: ContextTypes.DEFAULT_T
         context.user_data['shared_in_additional'] = True
         
         # Створюємо клавіатуру (це те саме меню, що й було)
-        additional_buttons = [
-            [KeyboardButton("👥 Учасники")],
-            [KeyboardButton("ℹ️ Інформація")],
-        ]
-        
-        if access_level in ['owner', 'admin', 'editor', 'contributor']:
-            additional_buttons.append([KeyboardButton("🗑 Видалити файл")])
-        if access_level in ['owner', 'admin']:
-            additional_buttons.append([KeyboardButton("🗂 Архівувати альбом")])
-        if access_level == 'owner':
-            additional_buttons.append([KeyboardButton("🗑 Видалити альбом")])
-            additional_buttons.append([KeyboardButton("📷 Перенести до моїх альбомів")])
-        
-        additional_buttons.append([KeyboardButton("◀️ Назад до альбому")])
+        additional_buttons = _shared_additional_buttons(access_level)
         
         await update.message.reply_text(
             f"📋 **Додаткові опції**\n\nОберіть потрібну дію:",
@@ -566,11 +568,8 @@ async def shared_view_all_members(update: Update, context: ContextTypes.DEFAULT_
         text += f"{role_emoji} **{name}** — *{role_name}*\n"
         text += f"└ Доданий: {added}\n\n"
     
-    keyboard = [[KeyboardButton("◀️ Назад до меню учасників")]]
-    
     await update.message.reply_text(
         text,
-        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
         parse_mode='Markdown'
     )
 
@@ -581,8 +580,7 @@ async def shared_add_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['shared_awaiting_member'] = True
     
     await update.message.reply_text(
-        "👤 Введіть username користувача (наприклад: @username)\n\n"
-        "Або натисніть кнопку нижче, щоб скасувати:",
+        "👤 Введіть username користувача (наприклад: @username)",
         reply_markup=ReplyKeyboardMarkup([
             [KeyboardButton("◀️ Назад до додаткових опцій")]
         ], resize_keyboard=True)
@@ -706,6 +704,7 @@ async def shared_manage_roles(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
     
     context.user_data['shared_in_role_selection'] = True
+    context.user_data['shared_selecting_member_for_removal'] = False
 
 async def shared_handle_role_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обробник текстового введення для зміни ролі (З ПЕРЕВІРКОЮ НА КНОПКИ)"""
@@ -721,6 +720,8 @@ async def shared_handle_role_text_input(update: Update, context: ContextTypes.DE
         "🗂 Архівувати альбом", "🗑 Видалити альбом", 
         "◀️ Назад до альбому", "◀️ Назад до додаткових опцій",
         "📤 Надіслати весь альбом", "📷 Перенести до моїх альбомів",
+        "📋 Переглянути всіх учасників", "➕ Додати учасника",
+        "⚙️ Змінити ролі", "🗑 Видалити учасника",
         "◀️ Вийти з альбому"
     ]
     
@@ -847,7 +848,7 @@ async def shared_set_role(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ========== ВИДАЛЕННЯ УЧАСНИКА ==========
 
 async def shared_remove_member_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, album_id):
-    """Меню видалення учасника"""
+    """Меню видалення учасника (inline як у спільних нотатках)"""
     members = db.cursor.execute("""
         SELECT u.user_id, u.username, u.first_name, sa.access_level
         FROM shared_albums sa
@@ -859,23 +860,21 @@ async def shared_remove_member_menu(update: Update, context: ContextTypes.DEFAUL
     if not members:
         await update.message.reply_text("👥 Немає учасників для видалення.")
         return
-    
-    text = "🗑 **Виберіть учасника для видалення:**\n\n"
+
+    text = "Для видалення учасника ви можете обрати його зі списку."
     keyboard = []
-    
+
     for member in members:
-        name = member['first_name'] or member['username'] or f"ID:{member['user_id']}"
+        uname = f"@{member['username']}" if member['username'] else (member['first_name'] or f"ID:{member['user_id']}")
         role_name = helpers.get_role_name(member['access_level'])
-        keyboard.append([KeyboardButton(f"🗑 {name} — {role_name}")])
-    
-    keyboard.append([KeyboardButton("◀️ Назад до меню учасників")])
-    
+        keyboard.append([InlineKeyboardButton(f"🗑 {uname} — {role_name}", callback_data=f"shared_member_del_pick_{member['user_id']}")])
+
     await update.message.reply_text(
         text,
-        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
-        parse_mode='Markdown'
+        reply_markup=InlineKeyboardMarkup(keyboard),
     )
-    
+
+    context.user_data['shared_in_role_selection'] = False
     context.user_data['shared_selecting_member_for_removal'] = True
 
 async def shared_handle_remove_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -908,6 +907,47 @@ async def shared_handle_remove_selection(update: Update, context: ContextTypes.D
             await shared_confirm_remove_member(update, context, user['user_id'])
             return True
     
+    return False
+
+
+async def handle_shared_member_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data = query.data
+    await query.answer()
+
+    if data.startswith("shared_member_del_pick_"):
+        target_user_id = int(data.split("_")[-1])
+        user = db.cursor.execute(
+            "SELECT first_name, username FROM users WHERE user_id = ?",
+            (target_user_id,),
+        ).fetchone()
+        name = f"@{user['username']}" if user and user["username"] else (user["first_name"] if user and user["first_name"] else f"ID:{target_user_id}")
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Так", callback_data=f"shared_member_del_confirm_{target_user_id}"),
+            InlineKeyboardButton("❌ Ні", callback_data=f"shared_member_del_cancel_{target_user_id}"),
+        ]])
+        await query.message.reply_text(f"Видалити учасника {name}?", reply_markup=kb)
+        return True
+
+    if data.startswith("shared_member_del_confirm_"):
+        target_user_id = int(data.split("_")[-1])
+        album_id = context.user_data.get('current_shared_album')
+        if album_id:
+            db.cursor.execute(
+                "DELETE FROM shared_albums WHERE album_id = ? AND user_id = ? AND access_level != 'owner'",
+                (album_id, target_user_id),
+            )
+            db.conn.commit()
+        await query.message.reply_text("✅ Учасника видалено з альбому!")
+        access_level = context.user_data.get('shared_access_level')
+        if album_id and access_level:
+            await shared_members_main(update, context, album_id, access_level)
+        return True
+
+    if data.startswith("shared_member_del_cancel_"):
+        await query.message.reply_text("Скасовано.")
+        return True
+
     return False
 
 async def shared_confirm_remove_member(update: Update, context: ContextTypes.DEFAULT_TYPE, target_user_id):
@@ -995,22 +1035,7 @@ async def shared_handle_members_navigation(update: Update, context: ContextTypes
         context.user_data['shared_in_members_main'] = False
         context.user_data['shared_in_additional'] = True
         
-        additional_buttons = [
-            [KeyboardButton("👥 Учасники")],
-            [KeyboardButton("ℹ️ Інформація")],
-        ]
-        
-        if access_level in ['owner', 'admin', 'editor', 'contributor']:
-            additional_buttons.append([KeyboardButton("🗑 Видалити файл")])
-        
-        if access_level in ['owner', 'admin']:
-            additional_buttons.append([KeyboardButton("🗂 Архівувати альбом")])
-        
-        if access_level == 'owner':
-            additional_buttons.append([KeyboardButton("🗑 Видалити альбом")])
-            additional_buttons.append([KeyboardButton("📷 Перенести до моїх альбомів")])
-        
-        additional_buttons.append([KeyboardButton("◀️ Назад до альбому")])
+        additional_buttons = _shared_additional_buttons(access_level)
         
         await update.message.reply_text(
             f"📋 **Додаткові опції**\n\nОберіть потрібну дію:",
@@ -1053,18 +1078,7 @@ async def shared_handle_all_buttons(update: Update, context: ContextTypes.DEFAUL
         ud['shared_in_additional'] = True
         # Показуємо додаткове меню
         access_level = ud.get('shared_access_level')
-        additional_buttons = [
-            [KeyboardButton("👥 Учасники")],
-            [KeyboardButton("ℹ️ Інформація")],
-        ]
-        if access_level in ['owner', 'admin', 'editor', 'contributor']:
-            additional_buttons.append([KeyboardButton("🗑 Видалити файл")])
-        if access_level in ['owner', 'admin']:
-            additional_buttons.append([KeyboardButton("🗂 Архівувати альбом")])
-        if access_level == 'owner':
-            additional_buttons.append([KeyboardButton("🗑 Видалити альбом")])
-            additional_buttons.append([KeyboardButton("📷 Перенести до моїх альбомів")])
-        additional_buttons.append([KeyboardButton("◀️ Назад до альбому")])
+        additional_buttons = _shared_additional_buttons(access_level)
         
         await update.message.reply_text(
             f"📋 **Додаткові опції**\n\nОберіть потрібну дію:",

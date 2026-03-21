@@ -73,7 +73,7 @@ from shared_albums import (
     shared_manage_roles, shared_handle_role_text_input, shared_show_role_options,
     handle_shared_role_back_button, shared_set_role, shared_remove_member_menu,
     shared_handle_remove_selection, shared_confirm_remove_member,
-    shared_handle_remove_confirmation, shared_handle_members_navigation,
+    shared_handle_remove_confirmation, shared_handle_members_navigation, handle_shared_member_delete_callback,
     shared_album_info, shared_return_to_album, shared_exit_album,
     shared_handle_file, shared_handle_main_buttons, shared_send_all,
     shared_send_recent_start, shared_handle_recent_count, shared_send_first_start,
@@ -687,10 +687,8 @@ async def handle_album_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
         context.user_data['in_additional_menu'] = True
         
         additional_keyboard = ReplyKeyboardMarkup([
-            [KeyboardButton("ℹ️ Інформація")],
-            [KeyboardButton("🗑 Видалити файли")],
-            [KeyboardButton("🗂 Архівувати альбом")],
-            [KeyboardButton("🗑 Видалити альбом")],
+            [KeyboardButton("ℹ️ Інформація"), KeyboardButton("🗑 Видалити файли")],
+            [KeyboardButton("🗂 Архівувати альбом"), KeyboardButton("🗑 Видалити альбом")],
             [KeyboardButton("👥 Зробити спільним")],
             [KeyboardButton("◀️ Назад до альбому")]
         ], resize_keyboard=True)
@@ -1612,6 +1610,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("shared_set_role_"):
         from shared_albums import shared_set_role
         await shared_set_role(update, context)
+
+    elif data.startswith("shared_member_del_"):
+        if await handle_shared_member_delete_callback(update, context):
+            return
     
     elif data == "shared_add_member":
         from shared_albums import shared_add_member_start
@@ -2695,14 +2697,20 @@ async def handle_all_text_inputs(update: Update, context: ContextTypes.DEFAULT_T
             return True
         
         # Якщо не спрацювало, пробуємо старі обробники для сумісності
-        if ud.get('shared_selecting_member_for_removal'): 
-            return await shared_handle_remove_selection(update, context)
+        if ud.get('shared_selecting_member_for_removal'):
+            res = await shared_handle_remove_selection(update, context)
+            if res:
+                return True
             
-        if ud.get('shared_in_role_selection'): 
-            return await shared_handle_role_text_input(update, context)
+        if ud.get('shared_in_role_selection'):
+            res = await shared_handle_role_text_input(update, context)
+            if res:
+                return True
             
-        if ud.get('shared_in_members_main'): 
-            return await shared_handle_members_navigation(update, context)
+        if ud.get('shared_in_members_main'):
+            res = await shared_handle_members_navigation(update, context)
+            if res:
+                return True
         
         # Кнопки видалення
         if text.startswith("Видалити:"):

@@ -245,10 +245,12 @@ async def notes_open_folder(update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("note_additional", None)
 
     await q.message.reply_text(
-        f"📁 {folder['name']}\n"
-        f"Записів: {folder['entries_count']}\n\n"
-        "Надсилайте свої записи в цей чат — вони автоматично збережуться в папку.\n"
-        "Також можна надсилати фото з підписом — збережеться фото і підпис у цьому записі.",
+        f"📝 **{folder['name']}**\n"
+        f"└ Записів: {folder['entries_count']}",
+        parse_mode="Markdown",
+    )
+    await q.message.reply_text(
+        "Надсилайте записи в цей чат, вони автоматично збережуться в папку.",
         reply_markup=notes_folder_keyboard(),
     )
 
@@ -283,7 +285,13 @@ async def handle_note_folder_name(update, context: ContextTypes.DEFAULT_TYPE) ->
     context.user_data["note_folder_active"] = True
 
     await update.message.reply_text(
-        f"✅ Папку '{name}' створено.\nНадішліть текст — він автоматично збережеться як запис.",
+        f"✅ Папку '{name}' успішно створено!\n\n"
+        f"📝 **{name}**\n"
+        f"└ Записів: 0",
+        parse_mode="Markdown",
+    )
+    await update.message.reply_text(
+        "Надсилайте записи в цей чат, вони автоматично збережуться в папку.",
         reply_markup=notes_folder_keyboard(),
     )
     return True
